@@ -288,9 +288,71 @@ class OpenInAppRequest(BaseModel):
     filepath: str
 
 
+def convert_raw_for_gimp(raw_path: str, project_path: str) -> str:
+    """Convert RAW file to TIFF using darktable-cli for GIMP editing"""
+    darktable_cli = r"C:\Program Files\darktable\bin\darktable-cli.exe"
+
+    if not os.path.exists(darktable_cli):
+        raise FileNotFoundError("darktable-cli not found")
+
+    # Output to a temp folder in the project
+    temp_dir = os.path.join(project_path, ".gimp_temp")
+    os.makedirs(temp_dir, exist_ok=True)
+
+    # Create output filename (same name but .tif - darktable uses .tif not .tiff)
+    base_name = os.path.splitext(os.path.basename(raw_path))[0]
+    output_path = os.path.join(temp_dir, f"{base_name}.tif")
+
+    # Skip if already converted (use cached version)
+    if os.path.exists(output_path):
+        raw_mtime = os.path.getmtime(raw_path)
+        tif_mtime = os.path.getmtime(output_path)
+        if tif_mtime >= raw_mtime:
+            print(f"[Darktable] Using cached TIFF: {output_path}")
+            return output_path
+        # RAW is newer, reconvert
+        print(f"[Darktable] RAW updated, reconverting...")
+
+    # Run darktable-cli to convert RAW to TIFF
+    # Use forward slashes - darktable is picky about paths
+    raw_path_unix = raw_path.replace("\\", "/")
+    output_path_unix = output_path.replace("\\", "/")
+
+    cmd = [
+        darktable_cli,
+        raw_path_unix,
+        output_path_unix,
+        "--hq", "true"
+    ]
+
+    print(f"[Darktable] Converting {os.path.basename(raw_path)} to TIFF...")
+    print(f"[Darktable] cmd: {cmd}")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    print(f"[Darktable] returncode: {result.returncode}")
+    print(f"[Darktable] stdout: {result.stdout}")
+    print(f"[Darktable] stderr: {result.stderr}")
+
+    if result.returncode != 0:
+        raise RuntimeError(f"darktable-cli failed: {result.stderr[:200]}")
+
+    # Check for output - darktable creates .tif
+    if not os.path.exists(output_path):
+        # Check what files exist
+        files = [f for f in os.listdir(temp_dir) if base_name in f]
+        if files:
+            # Use whatever darktable created
+            output_path = os.path.join(temp_dir, files[0])
+            print(f"[Darktable] Found output: {output_path}")
+        else:
+            raise RuntimeError(f"Conversion failed - no output file created")
+
+    print(f"[Darktable] Ready: {output_path}")
+    return output_path
+
+
 @router.post("/{name}/open-in-gimp")
 async def open_in_gimp(name: str, request: OpenInAppRequest):
-    """Open an image file in GIMP"""
+    """Open an image file in GIMP. RAW files are converted via darktable first."""
     library_path = get_library_path()
     project_path = os.path.join(library_path, name)
 
@@ -311,10 +373,22 @@ async def open_in_gimp(name: str, request: OpenInAppRequest):
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
 
+    # Check if it's a RAW file that needs conversion
+    ext = os.path.splitext(filepath)[1].lower()
+    file_to_open = filepath
+
+    if ext in RAW_EXTENSIONS:
+        try:
+            file_to_open = convert_raw_for_gimp(filepath, project_path)
+        except FileNotFoundError:
+            raise HTTPException(status_code=500, detail="darktable not installed - needed for RAW files")
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
     try:
         # GIMP 3 from Windows Store - use the app execution alias
         gimp_exe = os.path.expanduser(r"~\AppData\Local\Microsoft\WindowsApps\gimp-3.exe")
-        subprocess.Popen([gimp_exe, filepath])
+        subprocess.Popen([gimp_exe, file_to_open])
         return {"success": True, "message": f"Opening in GIMP: {os.path.basename(filepath)}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to open GIMP: {str(e)}")
