@@ -395,31 +395,53 @@ async def open_in_gimp(name: str, request: OpenInAppRequest):
 
         print(f"[GIMP] Checking for existing edits: xcf={xcf_exists}, tif={tif_exists}")
 
+        from datetime import datetime
+
         if xcf_exists and tif_exists:
-            # Both exist - check which is newer
+            # Both exist - offer all choices
             xcf_mtime = os.path.getmtime(xcf_path)
             tif_mtime = os.path.getmtime(tif_path)
-
-            from datetime import datetime
             xcf_date = datetime.fromtimestamp(xcf_mtime).strftime("%Y-%m-%d %H:%M")
             tif_date = datetime.fromtimestamp(tif_mtime).strftime("%Y-%m-%d %H:%M")
 
-            # Return choice to frontend
             return {
                 "success": True,
                 "needs_choice": True,
-                "message": "Multiple edits found",
+                "message": "Previous edits found",
                 "choices": [
                     {"type": "xcf", "path": xcf_path, "date": xcf_date, "label": f"GIMP Project (.xcf) - {xcf_date}"},
-                    {"type": "tif", "path": tif_path, "date": tif_date, "label": f"TIFF Export (.tif) - {tif_date}"}
+                    {"type": "tif", "path": tif_path, "date": tif_date, "label": f"TIFF (.tif) - {tif_date}"},
+                    {"type": "rebuild", "path": filepath, "date": None, "label": "Rebuild TIFF from RAW"}
                 ]
             }
         elif xcf_exists:
-            print(f"[GIMP] Found XCF project: {xcf_path}")
-            file_to_open = xcf_path
+            # XCF exists - offer XCF or rebuild
+            xcf_mtime = os.path.getmtime(xcf_path)
+            xcf_date = datetime.fromtimestamp(xcf_mtime).strftime("%Y-%m-%d %H:%M")
+
+            return {
+                "success": True,
+                "needs_choice": True,
+                "message": "Previous edit found",
+                "choices": [
+                    {"type": "xcf", "path": xcf_path, "date": xcf_date, "label": f"GIMP Project (.xcf) - {xcf_date}"},
+                    {"type": "rebuild", "path": filepath, "date": None, "label": "Rebuild TIFF from RAW"}
+                ]
+            }
         elif tif_exists:
-            print(f"[GIMP] Found TIF export: {tif_path}")
-            file_to_open = tif_path
+            # TIF exists - offer TIF or rebuild (in case TIF is corrupted)
+            tif_mtime = os.path.getmtime(tif_path)
+            tif_date = datetime.fromtimestamp(tif_mtime).strftime("%Y-%m-%d %H:%M")
+
+            return {
+                "success": True,
+                "needs_choice": True,
+                "message": "Previous conversion found",
+                "choices": [
+                    {"type": "tif", "path": tif_path, "date": tif_date, "label": f"Open existing TIFF - {tif_date}"},
+                    {"type": "rebuild", "path": filepath, "date": None, "label": "Rebuild TIFF from RAW (if corrupted)"}
+                ]
+            }
         else:
             # Need to convert from RAW
             try:
@@ -466,6 +488,58 @@ async def open_in_gimp_direct(name: str, request: OpenInAppRequest):
         gimp_exe = os.path.expanduser(r"~\AppData\Local\Microsoft\WindowsApps\gimp-3.exe")
         subprocess.Popen([gimp_exe, filepath])
         return {"success": True, "message": f"Opening in GIMP: {os.path.basename(filepath)}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to open GIMP: {str(e)}")
+
+
+@router.post("/{name}/rebuild-tiff")
+async def rebuild_tiff_for_gimp(name: str, request: OpenInAppRequest):
+    """Rebuild TIFF from RAW and open in GIMP (deletes existing TIF first)"""
+    library_path = get_library_path()
+    project_path = os.path.join(library_path, name)
+
+    if not os.path.exists(project_path):
+        raise HTTPException(status_code=404, detail=f"Project not found: {name}")
+
+    # filepath should be the RAW file path
+    filepath = request.filepath
+    if not os.path.isabs(filepath):
+        filepath = os.path.join(project_path, filepath)
+    filepath = os.path.normpath(filepath)
+
+    # Security check - must be within project
+    if not filepath.startswith(os.path.normpath(project_path)):
+        raise HTTPException(status_code=403, detail="Access denied - file outside project")
+
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail=f"RAW file not found: {filepath}")
+
+    # Delete existing TIF if present
+    base_name = os.path.splitext(os.path.basename(filepath))[0]
+    temp_dir = os.path.join(project_path, ".gimp_temp")
+    tif_path = os.path.join(temp_dir, f"{base_name}.tif")
+
+    if os.path.exists(tif_path):
+        try:
+            os.remove(tif_path)
+            print(f"[GIMP] Deleted existing TIF: {tif_path}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to delete old TIF: {str(e)}")
+
+    # Convert from RAW
+    try:
+        new_tif = convert_raw_for_gimp(filepath, project_path)
+        print(f"[GIMP] Rebuilt TIF: {new_tif}")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="darktable not installed - needed for RAW files")
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Open in GIMP
+    try:
+        gimp_exe = os.path.expanduser(r"~\AppData\Local\Microsoft\WindowsApps\gimp-3.exe")
+        subprocess.Popen([gimp_exe, new_tif])
+        return {"success": True, "message": f"Rebuilt and opening in GIMP: {os.path.basename(new_tif)}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to open GIMP: {str(e)}")
 

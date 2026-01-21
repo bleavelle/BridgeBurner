@@ -4,8 +4,11 @@ Photo culling and organization tool
 """
 import os
 import sys
+import signal
 import webbrowser
 import threading
+import atexit
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -15,7 +18,17 @@ from config import get_config
 from routers import projects
 from routers import imports
 
-app = FastAPI(title="Bridge Burner", version="2.0.0")
+
+@asynccontextmanager
+async def lifespan(app):
+    """Lifespan context manager for startup/shutdown events"""
+    # Startup: Clear preview cache from previous sessions
+    imports.clear_preview_cache()
+    yield
+    # Shutdown: nothing special needed
+
+
+app = FastAPI(title="Bridge Burner", version="2.0.0", lifespan=lifespan)
 
 # Include routers
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
@@ -55,7 +68,20 @@ def open_browser():
     webbrowser.open("http://localhost:8000")
 
 
+def cleanup_and_exit(*args):
+    """Clean shutdown - ensures port is released"""
+    print("\nShutting down Bridge Burner...")
+    os._exit(0)
+
+
 if __name__ == "__main__":
+    # Register signal handlers for clean shutdown
+    signal.signal(signal.SIGINT, cleanup_and_exit)
+    signal.signal(signal.SIGTERM, cleanup_and_exit)
+
+    # On Windows, also handle CTRL_CLOSE_EVENT via atexit
+    atexit.register(cleanup_and_exit)
+
     # Open browser in background thread
     threading.Thread(target=open_browser, daemon=True).start()
 

@@ -44,18 +44,18 @@ const Lightbox = {
      * Bind event listeners
      */
     bindEvents() {
-        // Close button and overlay click
-        this.elements.btnClose.addEventListener('click', () => this.close());
-        this.elements.overlay.addEventListener('click', () => this.close());
+        // Close button and overlay click (debounced)
+        this.elements.btnClose.addEventListener('click', debounce(() => this.close()));
+        this.elements.overlay.addEventListener('click', debounce(() => this.close()));
 
-        // Navigation
-        this.elements.btnPrev.addEventListener('click', () => this.prev());
-        this.elements.btnNext.addEventListener('click', () => this.next());
+        // Navigation (debounced to prevent rapid clicking)
+        this.elements.btnPrev.addEventListener('click', debounce(() => this.prev(), 200));
+        this.elements.btnNext.addEventListener('click', debounce(() => this.next(), 200));
 
-        // Actions
-        this.elements.btnCull.addEventListener('click', () => this.cull());
-        this.elements.btnKeep.addEventListener('click', () => this.keep());
-        this.elements.btnGimp.addEventListener('click', () => this.openInGimp());
+        // Actions (async debounced - these make API calls)
+        this.elements.btnCull.addEventListener('click', debounceAsync(() => this.cull()));
+        this.elements.btnKeep.addEventListener('click', debounceAsync(() => this.keep()));
+        this.elements.btnGimp.addEventListener('click', debounceAsync(() => this.openInGimp()));
 
         // Keyboard navigation
         document.addEventListener('keydown', (e) => this.handleKeyboard(e));
@@ -259,11 +259,11 @@ const Lightbox = {
         overlay.className = 'gimp-choice-overlay';
         overlay.innerHTML = `
             <div class="gimp-choice-dialog">
-                <h3>Multiple edits found</h3>
-                <p>Which version do you want to open?</p>
+                <h3>Open in GIMP</h3>
+                <p>Choose which version to open:</p>
                 <div class="gimp-choice-buttons">
                     ${choices.map((c, i) => `
-                        <button class="btn btn-secondary gimp-choice-btn" data-index="${i}">
+                        <button class="btn ${c.type === 'rebuild' ? 'btn-danger' : 'btn-secondary'} gimp-choice-btn" data-index="${i}">
                             ${c.label}
                         </button>
                     `).join('')}
@@ -275,12 +275,25 @@ const Lightbox = {
         // Append to body
         document.body.appendChild(overlay);
 
-        // Handle button clicks
+        // Handle button clicks (with debounce to prevent double-clicks)
+        let processing = false;
         overlay.querySelectorAll('.gimp-choice-btn').forEach(btn => {
             btn.addEventListener('click', async () => {
+                if (processing) return;
+                processing = true;
+
                 const choice = choices[parseInt(btn.dataset.index)];
+                btn.disabled = true;
+                btn.textContent = choice.type === 'rebuild' ? 'Converting...' : 'Opening...';
+
+                if (choice.type === 'rebuild') {
+                    // Rebuild TIFF from RAW
+                    await this.rebuildTiff(choice.path);
+                } else {
+                    // Open existing file directly
+                    await this.openGimpDirect(choice.path);
+                }
                 overlay.remove();
-                await this.openGimpDirect(choice.path);
             });
         });
 
@@ -315,6 +328,32 @@ const Lightbox = {
         } catch (error) {
             console.error('Failed to open in GIMP:', error);
             App.showToast('Failed to open in GIMP', 'error');
+        }
+    },
+
+    /**
+     * Rebuild TIFF from RAW and open in GIMP
+     */
+    async rebuildTiff(rawFilepath) {
+        App.showToast('Rebuilding TIFF from RAW... please wait', 'info');
+
+        try {
+            const response = await fetch(`/api/projects/${this.projectName}/rebuild-tiff`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filepath: rawFilepath })
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
+                App.showToast(data.message, 'success');
+            } else {
+                App.showToast(data.detail || 'Failed to rebuild TIFF', 'error');
+            }
+        } catch (error) {
+            console.error('Failed to rebuild TIFF:', error);
+            App.showToast('Failed to rebuild TIFF', 'error');
         }
     },
 

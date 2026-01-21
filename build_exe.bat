@@ -26,7 +26,7 @@ echo Building executable...
 echo This may take a few minutes...
 echo.
 
-.venv\Scripts\pyinstaller.exe --onedir --windowed --name "BridgeBurner" ^
+.venv\Scripts\pyinstaller.exe --onedir --console --name "BridgeBurner" ^
     --add-data "frontend;frontend" ^
     --add-data "ffmpeg;ffmpeg" ^
     --hidden-import uvicorn.logging ^
@@ -36,6 +36,12 @@ echo.
     --hidden-import uvicorn.protocols.websockets.auto ^
     --hidden-import uvicorn.lifespan ^
     --hidden-import uvicorn.lifespan.on ^
+    --hidden-import uvicorn.loops ^
+    --hidden-import uvicorn.loops.auto ^
+    --hidden-import email.mime.text ^
+    --collect-submodules uvicorn ^
+    --collect-submodules fastapi ^
+    --collect-submodules starlette ^
     backend\main.py
 
 if errorlevel 1 (

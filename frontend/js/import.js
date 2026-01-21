@@ -11,6 +11,8 @@ const Import = {
     conversionMultiplier: 17, // DNxHD default
     existingProjects: [],
     conversionJobId: null,
+    datePreviewData: null, // Stores date preview info for potential import
+    selectedDates: new Set(), // Dates selected for import (empty = import all)
 
     // Preset size multipliers
     presetMultipliers: {
@@ -39,19 +41,19 @@ const Import = {
      * Bind event listeners
      */
     bindEvents() {
-        // Browse button - native folder picker
-        document.getElementById('btn-browse')?.addEventListener('click', () => this.browseFolder());
+        // Browse button - native folder picker (async debounced)
+        document.getElementById('btn-browse')?.addEventListener('click', debounceAsync(() => this.browseFolder()));
 
-        // Scan button
-        document.getElementById('btn-scan')?.addEventListener('click', () => this.scanFolder());
+        // Scan button (async debounced)
+        document.getElementById('btn-scan')?.addEventListener('click', debounceAsync(() => this.scanFolder()));
 
-        // Enter key in source input
-        document.getElementById('import-source')?.addEventListener('keypress', (e) => {
+        // Enter key in source input (debounced)
+        document.getElementById('import-source')?.addEventListener('keypress', debounce((e) => {
             if (e.key === 'Enter') this.scanFolder();
-        });
+        }));
 
-        // Start import button
-        document.getElementById('btn-start-import')?.addEventListener('click', () => this.startImport());
+        // Start import button (async debounced - critical!)
+        document.getElementById('btn-start-import')?.addEventListener('click', debounceAsync(() => this.startImport()));
 
         // Convert checkbox toggle
         document.getElementById('import-convert')?.addEventListener('change', (e) => {
@@ -86,6 +88,9 @@ const Import = {
                 this.loadProjectInfo(e.target.value);
             }
         });
+
+        // Date preview button
+        document.getElementById('btn-date-preview')?.addEventListener('click', debounceAsync(() => this.loadDatePreviews()));
     },
 
     /**
@@ -114,6 +119,228 @@ const Import = {
         } catch (error) {
             App.showToast(error.message, 'error');
             console.error('Browse error:', error);
+        }
+    },
+
+    /**
+     * Load and display date-grouped previews
+     */
+    async loadDatePreviews() {
+        const sourcePath = document.getElementById('import-source')?.value?.trim();
+        if (!sourcePath) {
+            App.showToast('Please enter a source folder first', 'error');
+            return;
+        }
+
+        const container = document.getElementById('date-previews-container');
+        const btn = document.getElementById('btn-date-preview');
+        if (!container) return;
+
+        // Show loading state
+        container.classList.remove('hidden');
+        container.innerHTML = '<div class="date-preview-loading">Loading date previews...</div>';
+        if (btn) btn.disabled = true;
+
+        try {
+            const response = await fetch('/api/import/date-previews', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: sourcePath })
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || 'Failed to load previews');
+            }
+
+            const data = await response.json();
+
+            if (data.dates.length === 0) {
+                container.innerHTML = '<div class="date-preview-loading">No images found</div>';
+                return;
+            }
+
+            // Store preview data for potential import
+            this.datePreviewData = data;
+
+            // Initialize all dates as selected
+            this.selectedDates = new Set(data.dates.map(d => d.date));
+
+            // Build preview HTML with action buttons
+            let html = `
+                <div class="date-preview-actions">
+                    <button id="btn-select-all-dates" class="btn btn-secondary">Select All</button>
+                    <button id="btn-deselect-all-dates" class="btn btn-secondary">Deselect All</button>
+                    <button id="btn-hide-date-preview" class="btn btn-secondary">Hide Previews</button>
+                </div>
+                <div class="date-preview-summary" id="date-selection-summary">
+                    <strong>${data.total_dates}</strong> dates selected, <strong>${data.total_files}</strong> images
+                </div>
+                <p class="date-preview-hint">Click dates to select/deselect for import</p>`;
+
+            for (const dateGroup of data.dates) {
+                html += `
+                    <div class="date-preview-card selected" data-date="${dateGroup.date}" data-count="${dateGroup.total_count}">
+                        <div class="date-preview-header">
+                            <span class="date-preview-checkbox">✓</span>
+                            <span class="date-preview-date">${this.formatDate(dateGroup.date)}</span>
+                            <span class="date-preview-count">
+                                ${dateGroup.total_count} photos
+                                ${dateGroup.raw_count > 0 ? `(${dateGroup.raw_count} RAW)` : ''}
+                            </span>
+                        </div>
+                        <div class="date-preview-images">
+                            ${dateGroup.samples.map(sample => {
+                                // Try to load all images (including RAW) via the preview endpoint
+                                return `<img
+                                    class="date-preview-thumb"
+                                    src="/api/import/preview-image?filepath=${encodeURIComponent(sample.filepath)}"
+                                    alt="${sample.filename}"
+                                    title="${sample.filename}${sample.is_raw ? ' (RAW)' : ''}"
+                                    loading="lazy"
+                                    onerror="this.outerHTML='<div class=\\'date-preview-thumb raw-placeholder\\'>${sample.is_raw ? 'RAW' : 'Error'}<br>${sample.ext.toUpperCase()}</div>'"
+                                >`;
+                            }).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
+            container.innerHTML = html;
+
+            // Bind action buttons
+            document.getElementById('btn-hide-date-preview')?.addEventListener('click', () => {
+                this.hideDatePreviews();
+            });
+            document.getElementById('btn-select-all-dates')?.addEventListener('click', () => {
+                this.selectAllDates();
+            });
+            document.getElementById('btn-deselect-all-dates')?.addEventListener('click', () => {
+                this.deselectAllDates();
+            });
+
+            // Bind click handlers for date cards
+            container.querySelectorAll('.date-preview-card').forEach(card => {
+                card.addEventListener('click', (e) => {
+                    // Don't toggle if clicking on the image (let it do whatever)
+                    if (e.target.tagName === 'IMG') return;
+                    this.toggleDateSelection(card.dataset.date);
+                });
+            });
+
+        } catch (error) {
+            container.innerHTML = `<div class="date-preview-loading" style="color: var(--danger);">
+                Error: ${error.message}
+            </div>`;
+            App.showToast(error.message, 'error');
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    },
+
+    /**
+     * Format date string for display
+     */
+    formatDate(dateStr) {
+        try {
+            const date = new Date(dateStr + 'T00:00:00');
+            return date.toLocaleDateString('en-US', {
+                weekday: 'short',
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            });
+        } catch {
+            return dateStr;
+        }
+    },
+
+    /**
+     * Hide date previews and clear cache
+     */
+    async hideDatePreviews() {
+        const container = document.getElementById('date-previews-container');
+        if (container) {
+            container.classList.add('hidden');
+            container.innerHTML = '';
+        }
+        this.datePreviewData = null;
+        this.selectedDates = new Set();
+
+        // Clear the backend preview cache
+        try {
+            await fetch('/api/import/preview-cache', { method: 'DELETE' });
+        } catch (error) {
+            console.log('Failed to clear preview cache:', error);
+        }
+    },
+
+    /**
+     * Toggle selection of a date
+     */
+    toggleDateSelection(date) {
+        const card = document.querySelector(`.date-preview-card[data-date="${date}"]`);
+        if (!card) return;
+
+        if (this.selectedDates.has(date)) {
+            this.selectedDates.delete(date);
+            card.classList.remove('selected');
+        } else {
+            this.selectedDates.add(date);
+            card.classList.add('selected');
+        }
+
+        this.updateDateSelectionSummary();
+    },
+
+    /**
+     * Select all dates
+     */
+    selectAllDates() {
+        if (!this.datePreviewData) return;
+
+        this.selectedDates = new Set(this.datePreviewData.dates.map(d => d.date));
+
+        document.querySelectorAll('.date-preview-card').forEach(card => {
+            card.classList.add('selected');
+        });
+
+        this.updateDateSelectionSummary();
+    },
+
+    /**
+     * Deselect all dates
+     */
+    deselectAllDates() {
+        this.selectedDates = new Set();
+
+        document.querySelectorAll('.date-preview-card').forEach(card => {
+            card.classList.remove('selected');
+        });
+
+        this.updateDateSelectionSummary();
+    },
+
+    /**
+     * Update the selection summary display
+     */
+    updateDateSelectionSummary() {
+        const summary = document.getElementById('date-selection-summary');
+        if (!summary || !this.datePreviewData) return;
+
+        const selectedCount = this.selectedDates.size;
+        let totalImages = 0;
+
+        for (const dateGroup of this.datePreviewData.dates) {
+            if (this.selectedDates.has(dateGroup.date)) {
+                totalImages += dateGroup.total_count;
+            }
+        }
+
+        if (selectedCount === 0) {
+            summary.innerHTML = `<span style="color: var(--warning);">No dates selected - nothing will be imported</span>`;
+        } else {
+            summary.innerHTML = `<strong>${selectedCount}</strong> dates selected, <strong>${totalImages}</strong> images`;
         }
     },
 
@@ -345,7 +572,14 @@ const Import = {
             conversion_preset: document.getElementById('conversion-preset')?.value || 'dnxhd_1080p',
             delete_originals: document.getElementById('import-delete-originals')?.checked || false,
             add_to_existing: isExisting,
+            selected_dates: this.selectedDates.size > 0 ? Array.from(this.selectedDates) : [],
         };
+
+        // Warn if no dates selected but date preview was used
+        if (this.datePreviewData && this.selectedDates.size === 0) {
+            App.showToast('No dates selected - nothing will be imported!', 'error');
+            return;
+        }
 
         // Show progress view
         document.getElementById('import-step-1')?.classList.add('hidden');
@@ -464,6 +698,8 @@ const Import = {
         this.scanResults = null;
         this.sourceSize = 0;
         this.conversionJobId = null;
+        this.datePreviewData = null;
+        this.selectedDates = new Set();
 
         // Reset visibility
         document.getElementById('import-step-1')?.classList.remove('hidden');
@@ -472,6 +708,11 @@ const Import = {
         document.getElementById('import-step-4')?.classList.add('hidden');
         document.getElementById('conversion-progress')?.classList.add('hidden');
         document.getElementById('gopro-warning')?.classList.add('hidden');
+        const datePreviews = document.getElementById('date-previews-container');
+        if (datePreviews) {
+            datePreviews.classList.add('hidden');
+            datePreviews.innerHTML = '';
+        }
 
         // Reset progress
         document.getElementById('import-progress-fill').style.width = '0%';

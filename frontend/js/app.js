@@ -2,6 +2,36 @@
  * Bridge Burner - Main Application
  */
 
+/**
+ * Debounce helper - prevents rapid repeated calls
+ * Returns a function that ignores calls while a previous async call is in progress
+ */
+function debounceAsync(fn) {
+    let inProgress = false;
+    return async function(...args) {
+        if (inProgress) return;
+        inProgress = true;
+        try {
+            await fn.apply(this, args);
+        } finally {
+            inProgress = false;
+        }
+    };
+}
+
+/**
+ * Debounce with cooldown - prevents calls within cooldown period
+ */
+function debounce(fn, cooldownMs = 500) {
+    let lastCall = 0;
+    return function(...args) {
+        const now = Date.now();
+        if (now - lastCall < cooldownMs) return;
+        lastCall = now;
+        return fn.apply(this, args);
+    };
+}
+
 const App = {
     // Current state
     currentProject: null,
@@ -69,31 +99,31 @@ const App = {
      * Bind event listeners
      */
     bindEvents() {
-        // Navigation
-        this.elements.btnProjects.addEventListener('click', () => this.showView('projects'));
-        this.elements.btnImport?.addEventListener('click', () => this.showView('import'));
-        this.elements.btnSettings.addEventListener('click', () => this.showView('settings'));
-        this.elements.btnBack.addEventListener('click', () => this.showView('projects'));
+        // Navigation (debounced to prevent double-clicks)
+        this.elements.btnProjects.addEventListener('click', debounce(() => this.showView('projects')));
+        this.elements.btnImport?.addEventListener('click', debounce(() => this.showView('import')));
+        this.elements.btnSettings.addEventListener('click', debounce(() => this.showView('settings')));
+        this.elements.btnBack.addEventListener('click', debounce(() => this.showView('projects')));
 
-        // Delete culled button
-        this.elements.btnDeleteCulled.addEventListener('click', () => this.deleteCulled());
+        // Delete culled button (async debounce - waits for operation to complete)
+        this.elements.btnDeleteCulled.addEventListener('click', debounceAsync(() => this.deleteCulled()));
 
         // Filter tabs
         this.elements.filterTabs.forEach(tab => {
-            tab.addEventListener('click', (e) => this.setFilter(e.target.dataset.filter));
+            tab.addEventListener('click', debounce((e) => this.setFilter(e.target.dataset.filter)));
         });
 
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => this.handleKeyboard(e));
 
-        // Settings - library path
-        document.getElementById('btn-browse-library')?.addEventListener('click', () => this.browseLibraryPath());
-        document.getElementById('btn-save-library')?.addEventListener('click', () => this.saveLibraryPath());
+        // Settings - library path (async operations need async debounce)
+        document.getElementById('btn-browse-library')?.addEventListener('click', debounceAsync(() => this.browseLibraryPath()));
+        document.getElementById('btn-save-library')?.addEventListener('click', debounceAsync(() => this.saveLibraryPath()));
 
         // Project notes
-        this.elements.btnToggleNotes?.addEventListener('click', () => this.toggleNotesPanel());
-        this.elements.btnCloseNotes?.addEventListener('click', () => this.toggleNotesPanel(false));
-        this.elements.btnSaveNotes?.addEventListener('click', () => this.saveProjectNotes());
+        this.elements.btnToggleNotes?.addEventListener('click', debounce(() => this.toggleNotesPanel()));
+        this.elements.btnCloseNotes?.addEventListener('click', debounce(() => this.toggleNotesPanel(false)));
+        this.elements.btnSaveNotes?.addEventListener('click', debounceAsync(() => this.saveProjectNotes()));
     },
 
     /**

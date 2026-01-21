@@ -35,6 +35,20 @@ router = APIRouter()
 # Track active conversion jobs
 active_jobs = {}
 
+# Preview cache directory
+import tempfile
+PREVIEW_CACHE_DIR = os.path.join(tempfile.gettempdir(), "bridgeburner_preview_cache")
+
+
+def clear_preview_cache():
+    """Clear the preview image cache directory"""
+    if os.path.exists(PREVIEW_CACHE_DIR):
+        try:
+            shutil.rmtree(PREVIEW_CACHE_DIR)
+            print(f"[Cleanup] Cleared preview cache: {PREVIEW_CACHE_DIR}")
+        except Exception as e:
+            print(f"[Cleanup] Failed to clear preview cache: {e}")
+
 
 class ScanRequest(BaseModel):
     """Request to scan a folder"""
@@ -87,21 +101,26 @@ async def browse_folder():
         system = platform.system()
 
         if system == "Windows":
-            # PowerShell folder picker - works in frozen exe
+            # PowerShell folder picker - uses STA thread for proper COM dialog handling
             ps_script = '''
 Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.Application]::EnableVisualStyles()
 $folder = New-Object System.Windows.Forms.FolderBrowserDialog
-$folder.Description = "Select Source Folder"
+$folder.Description = "Select Folder"
 $folder.ShowNewFolderButton = $true
-if ($folder.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+$folder.RootFolder = [System.Environment+SpecialFolder]::MyComputer
+$result = $folder.ShowDialog()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
     Write-Output $folder.SelectedPath
 }
+$folder.Dispose()
 '''
             result = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_script],
+                ["powershell", "-NoProfile", "-STA", "-WindowStyle", "Hidden", "-Command", ps_script],
                 capture_output=True,
                 text=True,
-                timeout=120
+                timeout=120,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
             )
             path = result.stdout.strip()
 
@@ -213,6 +232,175 @@ async def scan_folder(request: ScanRequest):
         },
         "total_size": total_size,
     }
+
+
+@router.post("/date-previews")
+async def get_date_previews(request: ScanRequest):
+    """Get preview images grouped by date (3 per date) for quick review"""
+    path = request.path
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Path not found: {path}")
+
+    if not os.path.isdir(path):
+        raise HTTPException(status_code=400, detail=f"Path is not a directory: {path}")
+
+    from collections import defaultdict
+    import random
+
+    # Group files by date
+    files_by_date = defaultdict(list)
+
+    for root, dirs, filenames in os.walk(path):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+
+        for filename in filenames:
+            if filename.startswith("."):
+                continue
+
+            filepath = os.path.join(root, filename)
+            ext = os.path.splitext(filename)[1].lower()
+
+            # Only include images (JPEG and RAW)
+            if ext not in IMAGE_EXTENSIONS and ext not in RAW_EXTENSIONS:
+                continue
+
+            try:
+                # Get file modification time as fallback
+                mtime = os.path.getmtime(filepath)
+                from datetime import datetime
+                date_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+
+                # Try to get EXIF date if available (for JPEGs)
+                if ext in IMAGE_EXTENSIONS:
+                    try:
+                        from PIL import Image
+                        from PIL.ExifTags import TAGS
+                        with Image.open(filepath) as img:
+                            exif = img._getexif()
+                            if exif:
+                                for tag_id, value in exif.items():
+                                    tag = TAGS.get(tag_id, tag_id)
+                                    if tag == "DateTimeOriginal":
+                                        # Format: "2024:01:15 14:30:00"
+                                        date_str = value.split(" ")[0].replace(":", "-")
+                                        break
+                    except Exception:
+                        pass  # Fall back to mtime
+
+                files_by_date[date_str].append({
+                    "filename": filename,
+                    "filepath": filepath,
+                    "ext": ext,
+                    "is_raw": ext in RAW_EXTENSIONS,
+                })
+            except OSError:
+                continue
+
+    # Build preview data: 3 random samples per date
+    previews = []
+    for date_str in sorted(files_by_date.keys(), reverse=True):
+        files = files_by_date[date_str]
+        # Prefer JPEGs for previews (faster to load), but include RAW if no JPEGs
+        jpegs = [f for f in files if not f["is_raw"]]
+        raws = [f for f in files if f["is_raw"]]
+
+        # Pick up to 3 samples, preferring JPEGs
+        samples = []
+        if jpegs:
+            samples = random.sample(jpegs, min(3, len(jpegs)))
+        if len(samples) < 3 and raws:
+            samples += random.sample(raws, min(3 - len(samples), len(raws)))
+
+        previews.append({
+            "date": date_str,
+            "total_count": len(files),
+            "jpeg_count": len(jpegs),
+            "raw_count": len(raws),
+            "samples": samples,
+        })
+
+    return {
+        "path": path,
+        "dates": previews,
+        "total_dates": len(previews),
+        "total_files": sum(p["total_count"] for p in previews),
+    }
+
+
+@router.delete("/preview-cache")
+async def delete_preview_cache():
+    """Clear the preview image cache"""
+    clear_preview_cache()
+    return {"success": True, "message": "Preview cache cleared"}
+
+
+@router.get("/preview-image")
+async def get_preview_image(filepath: str):
+    """Serve a preview image (generates thumbnail for RAW files)"""
+    from fastapi.responses import FileResponse
+    import hashlib
+
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    ext = os.path.splitext(filepath)[1].lower()
+
+    # For RAW files, generate a cached preview thumbnail
+    if ext in RAW_EXTENSIONS:
+        try:
+            import rawpy
+            from PIL import Image
+
+            # Use the global cache directory
+            os.makedirs(PREVIEW_CACHE_DIR, exist_ok=True)
+
+            # Generate cache filename based on filepath + mtime
+            mtime = os.path.getmtime(filepath)
+            hash_input = f"{filepath}:{mtime}"
+            file_hash = hashlib.md5(hash_input.encode()).hexdigest()[:12]
+            cache_path = os.path.join(PREVIEW_CACHE_DIR, f"{file_hash}.jpg")
+
+            # Return cached version if exists
+            if os.path.exists(cache_path):
+                return FileResponse(cache_path, media_type="image/jpeg")
+
+            # Generate preview from RAW
+            with rawpy.imread(filepath) as raw:
+                # Try embedded thumbnail first (fast)
+                try:
+                    thumb = raw.extract_thumb()
+                    if thumb.format == rawpy.ThumbFormat.JPEG:
+                        with open(cache_path, "wb") as f:
+                            f.write(thumb.data)
+                        # Resize if too large
+                        with Image.open(cache_path) as img:
+                            if img.size[0] > 300 or img.size[1] > 300:
+                                img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+                                img.save(cache_path, "JPEG", quality=80)
+                        return FileResponse(cache_path, media_type="image/jpeg")
+                    elif thumb.format == rawpy.ThumbFormat.BITMAP:
+                        img = Image.fromarray(thumb.data)
+                        img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+                        img.save(cache_path, "JPEG", quality=80)
+                        return FileResponse(cache_path, media_type="image/jpeg")
+                except Exception:
+                    pass
+
+                # Fall back to full RAW processing (slower)
+                rgb = raw.postprocess(use_camera_wb=True, half_size=True)
+                img = Image.fromarray(rgb)
+                img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+                img.save(cache_path, "JPEG", quality=80)
+                return FileResponse(cache_path, media_type="image/jpeg")
+
+        except ImportError:
+            raise HTTPException(status_code=404, detail="RAW support not available (rawpy not installed)")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to process RAW: {str(e)}")
+
+    # For JPEGs, serve directly (browser will handle resizing)
+    return FileResponse(filepath, media_type="image/jpeg")
 
 
 @router.post("/import")
@@ -525,6 +713,7 @@ class ImportRequestV2(BaseModel):
     conversion_preset: str = "dnxhd_1080p"
     delete_originals: bool = False
     add_to_existing: bool = False
+    selected_dates: List[str] = []  # Filter to only import files from these dates (empty = all)
 
 
 @router.post("/import-v2")
@@ -592,7 +781,38 @@ async def import_files_v2(request: ImportRequestV2, background_tasks: Background
     print(f"[Import] Starting import from {source_path}")
     print(f"[Import] Project: {project_name}, Prefix: {request.file_prefix}")
 
+    # Date filtering setup
+    selected_dates_set = set(request.selected_dates) if request.selected_dates else None
+    if selected_dates_set:
+        print(f"[Import] Date filter active: {selected_dates_set}")
+
+    def get_file_date(filepath, ext):
+        """Get file date (EXIF for images, mtime for others)"""
+        try:
+            mtime = os.path.getmtime(filepath)
+            date_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+
+            # Try EXIF for JPEGs
+            if ext in IMAGE_EXTENSIONS:
+                try:
+                    from PIL import Image
+                    from PIL.ExifTags import TAGS
+                    with Image.open(filepath) as img:
+                        exif = img._getexif()
+                        if exif:
+                            for tag_id, value in exif.items():
+                                tag = TAGS.get(tag_id, tag_id)
+                                if tag == "DateTimeOriginal":
+                                    date_str = value.split(" ")[0].replace(":", "-")
+                                    break
+                except Exception:
+                    pass
+            return date_str
+        except Exception:
+            return None
+
     file_count = 0
+    skipped_by_date = 0
     for root, dirs, filenames in os.walk(source_path):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
 
@@ -607,6 +827,13 @@ async def import_files_v2(request: ImportRequestV2, background_tasks: Background
             # Skip already converted files
             if '_dnxhd' in stem.lower():
                 continue
+
+            # Date filter check (for images only)
+            if selected_dates_set and ext in (IMAGE_EXTENSIONS | RAW_EXTENSIONS):
+                file_date = get_file_date(filepath, ext)
+                if file_date and file_date not in selected_dates_set:
+                    skipped_by_date += 1
+                    continue
 
             file_count += 1
 
@@ -655,7 +882,7 @@ async def import_files_v2(request: ImportRequestV2, background_tasks: Background
                 print(f"[Import] ERROR copying {filename}: {e}")
                 errors.append({"file": filename, "error": str(e)})
 
-    print(f"[Import] Done! Copied {sum(imported.values())} files, {len(gopro_files)} GoPro queued for conversion")
+    print(f"[Import] Done! Copied {sum(imported.values())} files, {len(gopro_files)} GoPro queued for conversion, {skipped_by_date} skipped by date filter")
 
     # Save metadata
     with open(metadata_path, "w") as f:
