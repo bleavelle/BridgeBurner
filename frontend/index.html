@@ -19,6 +19,7 @@
             <button id="btn-projects" class="nav-btn active">Projects</button>
             <button id="btn-import" class="nav-btn">Import</button>
             <button id="btn-settings" class="nav-btn">Settings</button>
+            <button id="btn-help" class="nav-btn">Help</button>
         </nav>
     </header>
 
@@ -324,6 +325,59 @@
                 <button id="lightbox-cull" class="btn btn-danger">Cull (X)</button>
                 <button id="lightbox-keep" class="btn btn-success">Keep (K)</button>
                 <button id="lightbox-gimp" class="btn btn-secondary">Open in GIMP (G)</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Help Modal -->
+    <div id="help-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content help-modal-content">
+            <button id="help-close" class="modal-close">&times;</button>
+            <h2>Bridge Burner Help</h2>
+
+            <h3>Quick Start</h3>
+            <ol>
+                <li><strong>Import:</strong> Click Import, select your SD card or folder, scan, and import your photos</li>
+                <li><strong>Browse:</strong> Click a project to see all your photos in a grid</li>
+                <li><strong>Cull:</strong> Click a photo to open the lightbox, press X to mark for deletion, K to keep</li>
+                <li><strong>Delete:</strong> When done culling, click "Delete Culled" to remove rejected photos</li>
+            </ol>
+
+            <h3>Keyboard Shortcuts (Lightbox)</h3>
+            <table class="shortcuts-table">
+                <tr><td><kbd>&larr;</kbd> / <kbd>&rarr;</kbd></td><td>Previous / Next photo</td></tr>
+                <tr><td><kbd>X</kbd></td><td>Mark as culled (reject)</td></tr>
+                <tr><td><kbd>K</kbd></td><td>Keep (unmark)</td></tr>
+                <tr><td><kbd>Space</kbd></td><td>Toggle cull status</td></tr>
+                <tr><td><kbd>G</kbd></td><td>Open in GIMP (RAW files)</td></tr>
+                <tr><td><kbd>Esc</kbd></td><td>Close lightbox</td></tr>
+            </table>
+
+            <h3>Import Features</h3>
+            <ul>
+                <li><strong>Date Preview:</strong> Click "Preview by Date" to see photos grouped by date, then select which dates to import</li>
+                <li><strong>GoPro Conversion:</strong> Automatically detects GoPro files and converts to editing-friendly formats (DNxHD, ProRes)</li>
+                <li><strong>File Renaming:</strong> All files are renamed with your prefix (e.g., vacation_0001.jpg)</li>
+                <li><strong>RAW+JPEG:</strong> RAW and JPEG files are organized into separate folders</li>
+            </ul>
+
+            <h3>Open in GIMP</h3>
+            <p>Press G on a RAW file to convert it to TIFF and open in GIMP. Requires:</p>
+            <ul>
+                <li>GIMP 3 (installed via Microsoft Store or standalone)</li>
+                <li>darktable (for RAW to TIFF conversion)</li>
+            </ul>
+
+            <h3>Tips</h3>
+            <ul>
+                <li>Use the filter tabs (All, Kept, Culled, Images, RAW, Video) to focus your review</li>
+                <li>Add notes to projects to remember what you shot</li>
+                <li>The library location in Settings is where all your projects are stored</li>
+            </ul>
+
+            <div class="help-footer">
+                <p>Bridge Burner v2.0.0 | <a href="https://github.com/bleavelle/BridgeBurner" target="_blank">GitHub</a></p>
             </div>
         </div>
     </div>

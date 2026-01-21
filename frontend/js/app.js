@@ -105,6 +105,11 @@ const App = {
         this.elements.btnSettings.addEventListener('click', debounce(() => this.showView('settings')));
         this.elements.btnBack.addEventListener('click', debounce(() => this.showView('projects')));
 
+        // Help modal
+        document.getElementById('btn-help')?.addEventListener('click', debounce(() => this.showHelpModal()));
+        document.getElementById('help-close')?.addEventListener('click', debounce(() => this.hideHelpModal()));
+        document.querySelector('#help-modal .modal-overlay')?.addEventListener('click', () => this.hideHelpModal());
+
         // Delete culled button (async debounce - waits for operation to complete)
         this.elements.btnDeleteCulled.addEventListener('click', debounceAsync(() => this.deleteCulled()));
 
@@ -386,6 +391,15 @@ const App = {
             return;
         }
 
+        // Close help modal on Escape
+        if (e.key === 'Escape') {
+            const helpModal = document.getElementById('help-modal');
+            if (helpModal && !helpModal.classList.contains('hidden')) {
+                this.hideHelpModal();
+                return;
+            }
+        }
+
         // Lightbox is open - let it handle keys
         if (Lightbox.isOpen) {
             return;
@@ -435,6 +449,20 @@ const App = {
                 console.log('Service Worker registration failed:', error);
             }
         }
+    },
+
+    /**
+     * Show help modal
+     */
+    showHelpModal() {
+        document.getElementById('help-modal')?.classList.remove('hidden');
+    },
+
+    /**
+     * Hide help modal
+     */
+    hideHelpModal() {
+        document.getElementById('help-modal')?.classList.add('hidden');
     },
 
     /**
