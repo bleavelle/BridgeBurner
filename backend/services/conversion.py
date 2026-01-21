@@ -348,13 +348,17 @@ def convert_video(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            bufsize=1,  # Line buffered for real-time progress
             universal_newlines=True,
         )
 
-        # Parse progress output
+        # Parse progress output - use readline() for unbuffered reading
         current_time = 0
-        last_progress = -1
-        for line in process.stdout:
+        last_print_progress = -1
+        while True:
+            line = process.stdout.readline()
+            if not line and process.poll() is not None:
+                break
             line = line.strip()
             if line.startswith("out_time_ms="):
                 try:
@@ -362,12 +366,13 @@ def convert_video(
                     current_time = time_ms / 1000000  # Convert to seconds
                     if duration and duration > 0:
                         progress = min(100, (current_time / duration) * 100)
-                        # Only print/callback every 5%
-                        if int(progress / 5) > int(last_progress / 5):
-                            print(f"[FFmpeg] Progress: {progress:.1f}%")
-                            last_progress = progress
+                        # Always call the callback so UI updates
                         if progress_callback:
                             progress_callback(progress, f"Converting... {progress:.1f}%")
+                        # Only print to console every 5%
+                        if int(progress / 5) > int(last_print_progress / 5):
+                            print(f"[FFmpeg] Progress: {progress:.1f}%")
+                            last_print_progress = progress
                 except ValueError:
                     pass
 

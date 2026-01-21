@@ -362,7 +362,9 @@ async def get_job_status(job_id: str):
     if job_id not in active_jobs:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
-    return active_jobs[job_id]
+    job = active_jobs[job_id]
+    print(f"[API] Job {job_id}: progress={job.get('progress', 0):.1f}%, status={job.get('status')}")
+    return job
 
 
 @router.get("/jobs")
@@ -694,6 +696,8 @@ def run_gopro_conversion(
     counter = start_counter
     print(f"[Conversion] Using preset: {preset_name}, extension: {settings.extension}")
 
+    total_files = len(gopro_files)
+
     for i, input_path in enumerate(gopro_files):
         if file_prefix:
             output_filename = f"{file_prefix}_{counter:04d}{settings.extension}"
@@ -703,16 +707,20 @@ def run_gopro_conversion(
         output_path = os.path.join(video_dir, output_filename)
 
         job["current_file"] = os.path.basename(input_path)
-        print(f"[Conversion] [{i+1}/{len(gopro_files)}] Converting {os.path.basename(input_path)} -> {output_filename}")
+        current_file_name = os.path.basename(input_path)
+        print(f"[Conversion] [{i+1}/{total_files}] Converting {current_file_name} -> {output_filename}")
 
-        def update_progress(progress, message):
-            file_progress = (i + (progress / 100)) / len(gopro_files) * 100
-            job["progress"] = file_progress
-            job["current_message"] = message
-            if int(progress) % 10 == 0:  # Print every 10%
-                print(f"[Conversion] {os.path.basename(input_path)}: {progress:.0f}%")
+        # Create progress callback with captured values (not references)
+        def make_progress_callback(file_index, file_name, total, job_dict, jid):
+            def update_progress(progress, message):
+                file_progress = (file_index + (progress / 100)) / total * 100
+                job_dict["progress"] = file_progress
+                job_dict["current_message"] = message
+                print(f"[Callback] Job {jid}: file_progress={file_progress:.1f}%, ffmpeg_progress={progress:.1f}%")
+            return update_progress
 
-        result = convert_video(input_path, output_path, preset, update_progress)
+        progress_cb = make_progress_callback(i, current_file_name, total_files, job, job_id)
+        result = convert_video(input_path, output_path, preset, progress_cb)
 
         if result["success"]:
             print(f"[Conversion] SUCCESS: {output_filename}")
@@ -730,11 +738,11 @@ def run_gopro_conversion(
                 "error": result.get("error", "Unknown error")
             })
 
-        job["progress"] = ((i + 1) / len(gopro_files)) * 100
+        job["progress"] = ((i + 1) / total_files) * 100
 
     job["status"] = "completed"
     job["current_file"] = None
-    print(f"[Conversion] Job {job_id} completed. {job['completed']}/{len(gopro_files)} successful")
+    print(f"[Conversion] Job {job_id} completed. {job['completed']}/{total_files} successful")
 
 
 @router.get("/project-info/{name}")
