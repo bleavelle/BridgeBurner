@@ -236,8 +236,10 @@ const Lightbox = {
 
             if (response.ok) {
                 if (data.needs_choice) {
-                    // Multiple edits exist - ask user which to open
-                    this.showGimpChoiceDialog(data.choices);
+                    // Show choice dialog
+                    // Auto-start if it's a new conversion (no existing edits)
+                    const autoStart = data.needs_conversion === true;
+                    this.showGimpChoiceDialog(data.choices, autoStart);
                 } else {
                     App.showToast(data.message, 'success');
                 }
@@ -253,17 +255,21 @@ const Lightbox = {
     /**
      * Show dialog to choose between multiple GIMP edits
      */
-    showGimpChoiceDialog(choices) {
+    showGimpChoiceDialog(choices, autoStart = false) {
         // Create modal overlay
         const overlay = document.createElement('div');
         overlay.className = 'gimp-choice-overlay';
+
+        // Check if this is a new conversion (single "convert" choice)
+        const isNewConversion = choices.length === 1 && choices[0].type === 'convert';
+
         overlay.innerHTML = `
             <div class="gimp-choice-dialog">
                 <h3>Open in GIMP</h3>
-                <p>Choose which version to open:</p>
+                <p>${isNewConversion ? 'RAW file will be converted to TIFF:' : 'Choose which version to open:'}</p>
                 <div class="gimp-choice-buttons">
                     ${choices.map((c, i) => `
-                        <button class="btn ${c.type === 'rebuild' ? 'btn-danger' : 'btn-secondary'} gimp-choice-btn" data-index="${i}">
+                        <button class="btn ${(c.type === 'rebuild' || c.type === 'convert') ? 'btn-primary' : 'btn-secondary'} gimp-choice-btn" data-index="${i}">
                             ${c.label}
                         </button>
                     `).join('')}
@@ -277,23 +283,28 @@ const Lightbox = {
 
         // Handle button clicks (with debounce to prevent double-clicks)
         let processing = false;
+
+        const processChoice = async (btn, choice) => {
+            if (processing) return;
+            processing = true;
+
+            btn.disabled = true;
+            btn.textContent = (choice.type === 'rebuild' || choice.type === 'convert') ? 'Converting...' : 'Opening...';
+
+            if (choice.type === 'rebuild' || choice.type === 'convert') {
+                // Convert/rebuild TIFF from RAW
+                await this.rebuildTiff(choice.path);
+            } else {
+                // Open existing file directly
+                await this.openGimpDirect(choice.path);
+            }
+            overlay.remove();
+        };
+
         overlay.querySelectorAll('.gimp-choice-btn').forEach(btn => {
             btn.addEventListener('click', async () => {
-                if (processing) return;
-                processing = true;
-
                 const choice = choices[parseInt(btn.dataset.index)];
-                btn.disabled = true;
-                btn.textContent = choice.type === 'rebuild' ? 'Converting...' : 'Opening...';
-
-                if (choice.type === 'rebuild') {
-                    // Rebuild TIFF from RAW
-                    await this.rebuildTiff(choice.path);
-                } else {
-                    // Open existing file directly
-                    await this.openGimpDirect(choice.path);
-                }
-                overlay.remove();
+                await processChoice(btn, choice);
             });
         });
 
@@ -305,6 +316,12 @@ const Lightbox = {
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) overlay.remove();
         });
+
+        // Auto-start conversion for new RAW files
+        if (isNewConversion && autoStart) {
+            const btn = overlay.querySelector('.gimp-choice-btn');
+            processChoice(btn, choices[0]);
+        }
     },
 
     /**

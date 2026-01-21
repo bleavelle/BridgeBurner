@@ -443,18 +443,17 @@ async def open_in_gimp(name: str, request: OpenInAppRequest):
                 ]
             }
         else:
-            # Need to convert from RAW
-            try:
-                file_to_open = convert_raw_for_gimp(filepath, project_path)
-                # Save to manifest
-                gimp_edits[filename] = file_to_open
-                metadata["gimp_edits"] = gimp_edits
-                save_metadata(project_path, metadata)
-                print(f"[GIMP] Saved edit path to manifest: {filename} -> {file_to_open}")
-            except FileNotFoundError:
-                raise HTTPException(status_code=500, detail="darktable not installed - needed for RAW files")
-            except RuntimeError as e:
-                raise HTTPException(status_code=500, detail=str(e))
+            # No existing edits - show dialog to convert
+            # (Don't convert synchronously - let frontend handle it via rebuild-tiff endpoint)
+            return {
+                "success": True,
+                "needs_choice": True,
+                "needs_conversion": True,
+                "message": "RAW file needs conversion",
+                "choices": [
+                    {"type": "convert", "path": filepath, "date": None, "label": "Convert RAW to TIFF and open in GIMP"}
+                ]
+            }
 
     try:
         # GIMP 3 from Windows Store - use the app execution alias
