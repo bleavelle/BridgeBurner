@@ -221,13 +221,28 @@ const Lightbox = {
     /**
      * Open current file in GIMP
      */
-    openInGimp() {
+    async openInGimp() {
         const file = this.files[this.currentIndex];
         if (!file || file.type === 'video') return;
 
-        // This would need a backend endpoint to actually open in GIMP
-        // For now, show a message
-        App.showToast('Open in GIMP - Coming soon!', 'info');
+        try {
+            const response = await fetch(`/api/projects/${this.projectName}/open-in-gimp`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filepath: file.filepath })
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
+                App.showToast(data.message, 'success');
+            } else {
+                App.showToast(data.detail || 'Failed to open in GIMP', 'error');
+            }
+        } catch (error) {
+            console.error('Failed to open in GIMP:', error);
+            App.showToast('Failed to open in GIMP', 'error');
+        }
     },
 
     /**

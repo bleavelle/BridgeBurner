@@ -3,6 +3,8 @@ Project management endpoints for Bridge Burner v2
 """
 import os
 import json
+import subprocess
+import shutil
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, HTTPException
@@ -279,3 +281,40 @@ async def delete_culled(name: str):
         "errors": errors,
         "total_deleted": len(deleted),
     }
+
+
+class OpenInAppRequest(BaseModel):
+    """Request to open a file in an external app"""
+    filepath: str
+
+
+@router.post("/{name}/open-in-gimp")
+async def open_in_gimp(name: str, request: OpenInAppRequest):
+    """Open an image file in GIMP"""
+    library_path = get_library_path()
+    project_path = os.path.join(library_path, name)
+
+    if not os.path.exists(project_path):
+        raise HTTPException(status_code=404, detail=f"Project not found: {name}")
+
+    # Build full path and validate it's within project
+    filepath = request.filepath
+    if not os.path.isabs(filepath):
+        filepath = os.path.join(project_path, filepath)
+
+    filepath = os.path.normpath(filepath)
+
+    # Security check - must be within project
+    if not filepath.startswith(os.path.normpath(project_path)):
+        raise HTTPException(status_code=403, detail="Access denied - file outside project")
+
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
+
+    try:
+        # GIMP 3 from Windows Store - use the app execution alias
+        gimp_exe = os.path.expanduser(r"~\AppData\Local\Microsoft\WindowsApps\gimp-3.exe")
+        subprocess.Popen([gimp_exe, filepath])
+        return {"success": True, "message": f"Opening in GIMP: {os.path.basename(filepath)}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to open GIMP: {str(e)}")

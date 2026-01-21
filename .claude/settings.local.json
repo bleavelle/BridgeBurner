@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(powershell -Command \"Get-StartApps | Where-Object { $_.Name -like ''*GIMP*'' }\")",
+      "Bash(powershell:*)",
+      "Bash(gimp-3:*)",
+      "Bash(cmd //c \"gimp-3 --version\")",
+      "Bash(\"/c/Users/Edward Buendia/AppData/Local/Microsoft/WindowsApps/gimp-3.exe\" --version)"
     ]
   }
 }
