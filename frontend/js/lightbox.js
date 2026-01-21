@@ -235,6 +235,79 @@ const Lightbox = {
             const data = await response.json();
 
             if (response.ok) {
+                if (data.needs_choice) {
+                    // Multiple edits exist - ask user which to open
+                    this.showGimpChoiceDialog(data.choices);
+                } else {
+                    App.showToast(data.message, 'success');
+                }
+            } else {
+                App.showToast(data.detail || 'Failed to open in GIMP', 'error');
+            }
+        } catch (error) {
+            console.error('Failed to open in GIMP:', error);
+            App.showToast('Failed to open in GIMP', 'error');
+        }
+    },
+
+    /**
+     * Show dialog to choose between multiple GIMP edits
+     */
+    showGimpChoiceDialog(choices) {
+        // Create modal overlay
+        const overlay = document.createElement('div');
+        overlay.className = 'gimp-choice-overlay';
+        overlay.innerHTML = `
+            <div class="gimp-choice-dialog">
+                <h3>Multiple edits found</h3>
+                <p>Which version do you want to open?</p>
+                <div class="gimp-choice-buttons">
+                    ${choices.map((c, i) => `
+                        <button class="btn btn-secondary gimp-choice-btn" data-index="${i}">
+                            ${c.label}
+                        </button>
+                    `).join('')}
+                </div>
+                <button class="btn btn-link gimp-choice-cancel">Cancel</button>
+            </div>
+        `;
+
+        // Append to body
+        document.body.appendChild(overlay);
+
+        // Handle button clicks
+        overlay.querySelectorAll('.gimp-choice-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const choice = choices[parseInt(btn.dataset.index)];
+                overlay.remove();
+                await this.openGimpDirect(choice.path);
+            });
+        });
+
+        overlay.querySelector('.gimp-choice-cancel').addEventListener('click', () => {
+            overlay.remove();
+        });
+
+        // Close on overlay click
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) overlay.remove();
+        });
+    },
+
+    /**
+     * Open a specific file directly in GIMP
+     */
+    async openGimpDirect(filepath) {
+        try {
+            const response = await fetch(`/api/projects/${this.projectName}/open-in-gimp-direct`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filepath })
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
                 App.showToast(data.message, 'success');
             } else {
                 App.showToast(data.detail || 'Failed to open in GIMP', 'error');

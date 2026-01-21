@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import (
     get_library_path,
+    set_library_path,
     PROJECT_SUBDIRS,
     IMAGE_EXTENSIONS,
     RAW_EXTENSIONS,
@@ -376,19 +377,145 @@ async def open_in_gimp(name: str, request: OpenInAppRequest):
     # Check if it's a RAW file that needs conversion
     ext = os.path.splitext(filepath)[1].lower()
     file_to_open = filepath
+    filename = os.path.basename(filepath)
 
     if ext in RAW_EXTENSIONS:
-        try:
-            file_to_open = convert_raw_for_gimp(filepath, project_path)
-        except FileNotFoundError:
-            raise HTTPException(status_code=500, detail="darktable not installed - needed for RAW files")
-        except RuntimeError as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        # Check for existing GIMP edits (.xcf or .tif)
+        metadata = load_metadata(project_path)
+        gimp_edits = metadata.get("gimp_edits", {})
+
+        base_name = os.path.splitext(filename)[0]
+        temp_dir = os.path.join(project_path, ".gimp_temp")
+
+        xcf_path = os.path.join(temp_dir, f"{base_name}.xcf")
+        tif_path = os.path.join(temp_dir, f"{base_name}.tif")
+
+        xcf_exists = os.path.exists(xcf_path)
+        tif_exists = os.path.exists(tif_path)
+
+        print(f"[GIMP] Checking for existing edits: xcf={xcf_exists}, tif={tif_exists}")
+
+        if xcf_exists and tif_exists:
+            # Both exist - check which is newer
+            xcf_mtime = os.path.getmtime(xcf_path)
+            tif_mtime = os.path.getmtime(tif_path)
+
+            from datetime import datetime
+            xcf_date = datetime.fromtimestamp(xcf_mtime).strftime("%Y-%m-%d %H:%M")
+            tif_date = datetime.fromtimestamp(tif_mtime).strftime("%Y-%m-%d %H:%M")
+
+            # Return choice to frontend
+            return {
+                "success": True,
+                "needs_choice": True,
+                "message": "Multiple edits found",
+                "choices": [
+                    {"type": "xcf", "path": xcf_path, "date": xcf_date, "label": f"GIMP Project (.xcf) - {xcf_date}"},
+                    {"type": "tif", "path": tif_path, "date": tif_date, "label": f"TIFF Export (.tif) - {tif_date}"}
+                ]
+            }
+        elif xcf_exists:
+            print(f"[GIMP] Found XCF project: {xcf_path}")
+            file_to_open = xcf_path
+        elif tif_exists:
+            print(f"[GIMP] Found TIF export: {tif_path}")
+            file_to_open = tif_path
+        else:
+            # Need to convert from RAW
+            try:
+                file_to_open = convert_raw_for_gimp(filepath, project_path)
+                # Save to manifest
+                gimp_edits[filename] = file_to_open
+                metadata["gimp_edits"] = gimp_edits
+                save_metadata(project_path, metadata)
+                print(f"[GIMP] Saved edit path to manifest: {filename} -> {file_to_open}")
+            except FileNotFoundError:
+                raise HTTPException(status_code=500, detail="darktable not installed - needed for RAW files")
+            except RuntimeError as e:
+                raise HTTPException(status_code=500, detail=str(e))
 
     try:
         # GIMP 3 from Windows Store - use the app execution alias
         gimp_exe = os.path.expanduser(r"~\AppData\Local\Microsoft\WindowsApps\gimp-3.exe")
         subprocess.Popen([gimp_exe, file_to_open])
+        return {"success": True, "message": f"Opening in GIMP: {os.path.basename(file_to_open)}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to open GIMP: {str(e)}")
+
+
+@router.post("/{name}/open-in-gimp-direct")
+async def open_in_gimp_direct(name: str, request: OpenInAppRequest):
+    """Open a specific file in GIMP (used after user chooses from multiple edits)"""
+    library_path = get_library_path()
+    project_path = os.path.join(library_path, name)
+
+    if not os.path.exists(project_path):
+        raise HTTPException(status_code=404, detail=f"Project not found: {name}")
+
+    filepath = request.filepath
+    filepath = os.path.normpath(filepath)
+
+    # Security check - must be within project
+    if not filepath.startswith(os.path.normpath(project_path)):
+        raise HTTPException(status_code=403, detail="Access denied - file outside project")
+
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
+
+    try:
+        gimp_exe = os.path.expanduser(r"~\AppData\Local\Microsoft\WindowsApps\gimp-3.exe")
+        subprocess.Popen([gimp_exe, filepath])
         return {"success": True, "message": f"Opening in GIMP: {os.path.basename(filepath)}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to open GIMP: {str(e)}")
+
+
+class SetLibraryRequest(BaseModel):
+    """Request to set the library path"""
+    path: str
+
+
+class UpdateNotesRequest(BaseModel):
+    """Request to update project notes"""
+    notes: str
+
+
+@router.post("/{name}/notes")
+async def update_project_notes(name: str, request: UpdateNotesRequest):
+    """Update project notes"""
+    library_path = get_library_path()
+    project_path = os.path.join(library_path, name)
+
+    if not is_valid_project(project_path):
+        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+
+    metadata = load_metadata(project_path)
+    metadata["notes"] = request.notes
+    save_metadata(project_path, metadata)
+
+    return {"success": True, "notes": request.notes}
+
+
+@router.post("/settings/library")
+async def update_library_path(request: SetLibraryRequest):
+    """Update the library path setting"""
+    path = request.path
+
+    # Validate path exists or can be created
+    if not os.path.exists(path):
+        try:
+            os.makedirs(path, exist_ok=True)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Cannot create directory: {str(e)}")
+
+    if not os.path.isdir(path):
+        raise HTTPException(status_code=400, detail="Path is not a directory")
+
+    set_library_path(path)
+    return {"success": True, "path": path}
+
+
+@router.get("/settings/library")
+async def get_library_setting():
+    """Get the current library path"""
+    return {"path": get_library_path()}

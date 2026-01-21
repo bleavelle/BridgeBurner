@@ -959,3 +959,136 @@ kbd {
         justify-content: center;
     }
 }
+
+/* ===== GIMP Choice Dialog ===== */
+.gimp-choice-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+}
+
+.gimp-choice-dialog {
+    position: relative;
+    background: var(--bg-secondary);
+    border: 3px solid var(--cyan);
+    padding: 2rem;
+    max-width: 400px;
+    width: 90%;
+    text-align: center;
+    box-shadow: 0 0 30px rgba(0, 255, 255, 0.3);
+}
+
+.gimp-choice-dialog h3 {
+    color: var(--cyan);
+    margin-bottom: 1rem;
+}
+
+.gimp-choice-dialog p {
+    color: var(--text-secondary);
+    margin-bottom: 1.5rem;
+}
+
+.gimp-choice-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.gimp-choice-btn {
+    padding: 0.75rem 1rem;
+    font-size: 0.9rem;
+}
+
+.gimp-choice-cancel {
+    background: none;
+    border: none;
+    color: var(--gray);
+    cursor: pointer;
+    padding: 0.5rem;
+}
+
+.gimp-choice-cancel:hover {
+    color: var(--text-primary);
+}
+
+/* Input with button */
+.input-with-button {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.input-with-button input {
+    flex: 1;
+}
+
+.input-with-button .btn {
+    white-space: nowrap;
+}
+
+/* ===== Project Notes Panel ===== */
+.project-notes-panel {
+    background: var(--bg-secondary);
+    border: 3px solid var(--teal);
+    padding: var(--space-md);
+    margin-bottom: var(--space-lg);
+}
+
+.project-notes-panel.hidden {
+    display: none;
+}
+
+.notes-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--space-sm);
+}
+
+.notes-header h3 {
+    color: var(--cyan);
+    font-size: 1rem;
+    margin: 0;
+}
+
+.notes-header .btn-icon {
+    width: 24px;
+    height: 24px;
+    font-size: 1.2rem;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+}
+
+.notes-header .btn-icon:hover {
+    color: var(--danger);
+}
+
+#project-notes {
+    width: 100%;
+    padding: var(--space-sm);
+    font-family: inherit;
+    font-size: 0.9rem;
+    background: var(--bg-card);
+    border: 2px inset var(--gray);
+    color: var(--text-primary);
+    resize: vertical;
+    margin-bottom: var(--space-sm);
+}
+
+#project-notes:focus {
+    outline: none;
+    border-color: var(--cyan);
+}
+
+.btn-small {
+    padding: var(--space-xs) var(--space-md);
+    font-size: 0.85rem;
+}

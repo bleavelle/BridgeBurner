@@ -1,19 +1,17 @@
 @echo off
 cd /d "%~dp0"
 
-:: Use the existing photo_organizer venv since Python isn't in PATH
-set PYTHON=C:\Users\Edward Buendia\Documents\photo_organizer\.venv\Scripts\python.exe
-set PIP=C:\Users\Edward Buendia\Documents\photo_organizer\.venv\Scripts\pip.exe
-
-:: Check if we need to install FastAPI
-"%PIP%" show fastapi >nul 2>&1
-if errorlevel 1 (
-    echo Installing FastAPI dependencies...
-    "%PIP%" install fastapi uvicorn[standard] pillow rawpy
+:: Check if setup has been run
+if not exist ".venv\Scripts\python.exe" (
+    echo Bridge Burner has not been set up yet.
+    echo.
+    echo Running setup...
+    call setup.bat
+    if errorlevel 1 exit /b 1
 )
 
-:: Run the FastAPI server
+:: Run the app
 echo Starting Bridge Burner v2...
-"%PYTHON%" backend\main.py
+.venv\Scripts\python.exe backend\main.py
 
 pause

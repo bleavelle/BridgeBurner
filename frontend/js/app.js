@@ -51,6 +51,11 @@ const App = {
             statKept: document.getElementById('stat-kept'),
             btnDeleteCulled: document.getElementById('btn-delete-culled'),
             filterTabs: document.querySelectorAll('.filter-tab'),
+            btnToggleNotes: document.getElementById('btn-toggle-notes'),
+            projectNotesPanel: document.getElementById('project-notes-panel'),
+            projectNotes: document.getElementById('project-notes'),
+            btnCloseNotes: document.getElementById('btn-close-notes'),
+            btnSaveNotes: document.getElementById('btn-save-notes'),
 
             // Settings
             libraryLocation: document.getElementById('library-location'),
@@ -80,6 +85,15 @@ const App = {
 
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => this.handleKeyboard(e));
+
+        // Settings - library path
+        document.getElementById('btn-browse-library')?.addEventListener('click', () => this.browseLibraryPath());
+        document.getElementById('btn-save-library')?.addEventListener('click', () => this.saveLibraryPath());
+
+        // Project notes
+        this.elements.btnToggleNotes?.addEventListener('click', () => this.toggleNotesPanel());
+        this.elements.btnCloseNotes?.addEventListener('click', () => this.toggleNotesPanel(false));
+        this.elements.btnSaveNotes?.addEventListener('click', () => this.saveProjectNotes());
     },
 
     /**
@@ -164,6 +178,13 @@ const App = {
             this.currentProject = project;
             this.files = project.files;
             this.elements.projectName.textContent = project.name;
+
+            // Load project notes
+            const notes = project.metadata?.notes || '';
+            this.elements.projectNotes.value = notes;
+            // Hide notes panel when opening a new project
+            this.elements.projectNotesPanel?.classList.add('hidden');
+
             this.setFilter('all');
             this.updateStats();
             this.showView('detail');
@@ -383,6 +404,98 @@ const App = {
             } catch (error) {
                 console.log('Service Worker registration failed:', error);
             }
+        }
+    },
+
+    /**
+     * Browse for library path
+     */
+    async browseLibraryPath() {
+        try {
+            const response = await fetch('/api/import/browse-folder', { method: 'POST' });
+            const data = await response.json();
+
+            if (data.path) {
+                this.elements.libraryLocation.value = data.path;
+            }
+        } catch (error) {
+            this.showToast('Failed to open folder picker', 'error');
+        }
+    },
+
+    /**
+     * Save library path setting
+     */
+    async saveLibraryPath() {
+        const path = this.elements.libraryLocation.value.trim();
+        if (!path) {
+            this.showToast('Please enter a path', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/projects/settings/library', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path })
+            });
+
+            if (response.ok) {
+                this.showToast('Library path saved!', 'success');
+                this.loadProjects(); // Refresh project list
+            } else {
+                const data = await response.json();
+                this.showToast(data.detail || 'Failed to save', 'error');
+            }
+        } catch (error) {
+            this.showToast('Failed to save library path', 'error');
+        }
+    },
+
+    /**
+     * Toggle the notes panel visibility
+     */
+    toggleNotesPanel(show) {
+        const panel = this.elements.projectNotesPanel;
+        if (!panel) return;
+
+        if (show === undefined) {
+            // Toggle
+            panel.classList.toggle('hidden');
+        } else if (show) {
+            panel.classList.remove('hidden');
+        } else {
+            panel.classList.add('hidden');
+        }
+    },
+
+    /**
+     * Save project notes
+     */
+    async saveProjectNotes() {
+        if (!this.currentProject) return;
+
+        const notes = this.elements.projectNotes.value;
+
+        try {
+            const response = await fetch(`/api/projects/${encodeURIComponent(this.currentProject.name)}/notes`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ notes })
+            });
+
+            if (response.ok) {
+                this.showToast('Notes saved!', 'success');
+                // Update local state
+                if (this.currentProject.metadata) {
+                    this.currentProject.metadata.notes = notes;
+                }
+            } else {
+                const data = await response.json();
+                this.showToast(data.detail || 'Failed to save notes', 'error');
+            }
+        } catch (error) {
+            this.showToast('Failed to save notes', 'error');
         }
     }
 };

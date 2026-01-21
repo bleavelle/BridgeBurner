@@ -5,9 +5,8 @@ Handles scanning folders, organizing files, and video conversion
 import os
 import json
 import shutil
-import asyncio
 from datetime import datetime
-from typing import Optional, List
+from typing import List
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 
@@ -82,29 +81,54 @@ async def list_presets():
 async def browse_folder():
     """Open native folder picker dialog and return selected path"""
     import subprocess
-    import sys
-
-    # Use tkinter for cross-platform folder dialog
-    # Run in a subprocess to avoid tkinter/asyncio conflicts
-    script = '''
-import tkinter as tk
-from tkinter import filedialog
-root = tk.Tk()
-root.withdraw()
-root.attributes('-topmost', True)
-folder = filedialog.askdirectory(title="Select Source Folder")
-print(folder if folder else "")
-'''
+    import platform
 
     try:
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            timeout=120  # 2 minute timeout
-        )
+        system = platform.system()
 
-        path = result.stdout.strip()
+        if system == "Windows":
+            # PowerShell folder picker - works in frozen exe
+            ps_script = '''
+Add-Type -AssemblyName System.Windows.Forms
+$folder = New-Object System.Windows.Forms.FolderBrowserDialog
+$folder.Description = "Select Source Folder"
+$folder.ShowNewFolderButton = $true
+if ($folder.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    Write-Output $folder.SelectedPath
+}
+'''
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            path = result.stdout.strip()
+
+        elif system == "Darwin":  # macOS
+            # AppleScript for native folder picker
+            result = subprocess.run(
+                ["osascript", "-e", 'POSIX path of (choose folder with prompt "Select Source Folder")'],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            path = result.stdout.strip()
+
+        else:  # Linux
+            # Try zenity first (GNOME), then kdialog (KDE)
+            path = None
+            for cmd in [
+                ["zenity", "--file-selection", "--directory", "--title=Select Source Folder"],
+                ["kdialog", "--getexistingdirectory", ".", "--title", "Select Source Folder"],
+            ]:
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                    if result.returncode == 0:
+                        path = result.stdout.strip()
+                        break
+                except FileNotFoundError:
+                    continue
 
         if path:
             return {"path": path, "cancelled": False}
@@ -297,7 +321,7 @@ async def import_files(request: ImportRequest, background_tasks: BackgroundTasks
     }
 
 
-async def run_batch_conversion(job_id: str, project_path: str, preset_name: str):
+def run_batch_conversion(job_id: str, project_path: str, preset_name: str):
     """Background task to convert all videos in a project"""
     job = active_jobs[job_id]
     job["status"] = "running"
