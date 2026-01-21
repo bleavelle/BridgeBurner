@@ -201,6 +201,16 @@ body {
     border-color: var(--danger);
 }
 
+.btn-danger-outline {
+    background: transparent;
+    color: var(--danger);
+    border-color: var(--danger);
+}
+
+.btn-danger-outline:hover {
+    background: #660000;
+}
+
 .btn-icon {
     width: 32px;
     height: 32px;
@@ -244,12 +254,41 @@ body {
     padding: var(--space-lg);
     cursor: pointer;
     transition: all 0.2s;
+    position: relative;
 }
 
 .project-card:hover {
     border-color: var(--cyan);
     box-shadow: 0 0 20px rgba(0, 255, 255, 0.3);
     transform: translateY(-2px);
+}
+
+.project-card .btn-delete-project {
+    position: absolute;
+    top: var(--space-sm);
+    right: var(--space-sm);
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    background: transparent;
+    border: 2px solid var(--danger);
+    color: var(--danger);
+    font-size: 1.2rem;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.2s, background 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.project-card:hover .btn-delete-project {
+    opacity: 1;
+}
+
+.project-card .btn-delete-project:hover {
+    background: var(--danger);
+    color: var(--white);
 }
 
 .project-title {

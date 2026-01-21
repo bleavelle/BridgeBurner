@@ -188,7 +188,8 @@ const App = {
         }
 
         this.elements.projectList.innerHTML = projects.map(project => `
-            <div class="project-card" data-project="${project.name}">
+            <div class="project-card" data-project="${this.escapeHtml(project.name)}">
+                <button class="btn-delete-project" title="Delete project">&times;</button>
                 <h3 class="project-title">${this.escapeHtml(project.name)}</h3>
                 <div class="project-stats">
                     <span>${project.total_files} files</span>
@@ -200,7 +201,18 @@ const App = {
 
         // Bind click events
         this.elements.projectList.querySelectorAll('.project-card').forEach(card => {
-            card.addEventListener('click', () => this.openProject(card.dataset.project));
+            // Open project on card click
+            card.addEventListener('click', (e) => {
+                if (!e.target.closest('.btn-delete-project')) {
+                    this.openProject(card.dataset.project);
+                }
+            });
+
+            // Delete button
+            card.querySelector('.btn-delete-project').addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.deleteProject(card.dataset.project);
+            });
         });
     },
 
@@ -385,6 +397,32 @@ const App = {
 
         } catch (error) {
             this.showToast('Failed to delete files', 'error');
+            console.error(error);
+        }
+    },
+
+    /**
+     * Delete entire project
+     */
+    async deleteProject(projectName) {
+        if (!confirm(`Are you sure you want to delete the entire project "${projectName}"?\n\nThis will permanently delete all files and cannot be undone!`)) {
+            return;
+        }
+
+        // Double confirm for safety
+        if (!confirm(`FINAL WARNING: Click OK to confirm deletion of "${projectName}" and all its contents.`)) {
+            return;
+        }
+
+        try {
+            await API.deleteProject(projectName);
+            this.showToast(`Project "${projectName}" deleted`, 'success');
+
+            // Refresh project list
+            this.loadProjects();
+
+        } catch (error) {
+            this.showToast('Failed to delete project', 'error');
             console.error(error);
         }
     },

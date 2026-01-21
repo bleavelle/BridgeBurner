@@ -171,6 +171,22 @@ async def get_project(name: str):
     }
 
 
+@router.delete("/{name}")
+async def delete_project(name: str):
+    """Delete an entire project and all its files"""
+    library_path = get_library_path()
+    project_path = os.path.join(library_path, name)
+
+    if not is_valid_project(project_path):
+        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+
+    try:
+        shutil.rmtree(project_path)
+        return {"success": True, "message": f"Project '{name}' deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete project: {str(e)}")
+
+
 @router.get("/{name}/files/{filename:path}")
 async def get_file(name: str, filename: str):
     """Serve an image/video file (converts RAW to JPEG for browser display)"""

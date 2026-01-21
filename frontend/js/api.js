@@ -100,6 +100,21 @@ const API = {
             throw new Error(`Failed to delete culled files: ${response.statusText}`);
         }
         return response.json();
+    },
+
+    /**
+     * Delete an entire project
+     * @param {string} projectName - Project name
+     * @returns {Promise<Object>}
+     */
+    async deleteProject(projectName) {
+        const response = await fetch(`${this.baseUrl}/${encodeURIComponent(projectName)}`, {
+            method: 'DELETE'
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to delete project: ${response.statusText}`);
+        }
+        return response.json();
     }
 };
 
