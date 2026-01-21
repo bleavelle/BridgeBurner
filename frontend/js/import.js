@@ -11,6 +11,7 @@ const Import = {
     conversionMultiplier: 17, // DNxHD default
     existingProjects: [],
     conversionJobId: null,
+    importJobId: null, // Import job ID for progress polling
     datePreviewData: null, // Stores date preview info for potential import
     selectedDates: new Set(), // Dates selected for import (empty = import all)
 
@@ -587,8 +588,8 @@ const Import = {
         document.getElementById('import-step-3')?.classList.add('hidden');
         document.getElementById('import-step-4')?.classList.remove('hidden');
 
-        document.getElementById('import-progress-text').textContent = 'Copying files... (check terminal for progress)';
-        document.getElementById('import-progress-fill').style.width = '10%';
+        document.getElementById('import-progress-text').textContent = 'Starting import...';
+        document.getElementById('import-progress-fill').style.width = '0%';
 
         try {
             const response = await fetch('/api/import/import-v2', {
@@ -614,24 +615,11 @@ const Import = {
             console.log('[Import] Response:', data);
 
             if (data.success) {
-                const total = Object.values(data.imported).reduce((a, b) => a + b, 0);
-                document.getElementById('import-progress-fill').style.width = '100%';
-
-                let statusMsg = `Imported ${total} files (RAW: ${data.imported.RAW}, JPEG: ${data.imported.JPEG}, Video: ${data.imported.Video})`;
-                if (data.gopro_queued > 0) {
-                    statusMsg += ` | ${data.gopro_queued} GoPro queued for conversion`;
-                }
-                document.getElementById('import-progress-text').textContent = statusMsg;
-
-                if (data.conversion_job_id) {
-                    console.log('[Import] Starting conversion polling for job:', data.conversion_job_id);
-                    this.conversionJobId = data.conversion_job_id;
-                    document.getElementById('conversion-progress')?.classList.remove('hidden');
-                    this.pollConversionProgress();
-                } else {
-                    App.showToast('Import complete!', 'success');
-                    setTimeout(() => this.resetImport(), 3000);
-                }
+                // Start polling for import progress
+                this.importJobId = data.job_id;
+                document.getElementById('import-progress-text').textContent =
+                    `Copying 0/${data.total_files} files...`;
+                this.pollImportProgress();
             } else {
                 throw new Error(data.error || 'Import failed');
             }
@@ -639,6 +627,83 @@ const Import = {
         } catch (error) {
             App.showToast(error.message, 'error');
             document.getElementById('import-progress-text').textContent = `Error: ${error.message}`;
+        }
+    },
+
+    /**
+     * Poll import job progress
+     */
+    async pollImportProgress() {
+        if (!this.importJobId) {
+            console.log('[Import] No import job ID, stopping poll');
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/import/jobs/${this.importJobId}`);
+            const job = await response.json();
+            console.log('[Import] Job status:', job);
+
+            // Update progress bar
+            document.getElementById('import-progress-fill').style.width = `${job.progress}%`;
+
+            if (job.status === 'running' || job.status === 'queued') {
+                document.getElementById('import-progress-text').textContent =
+                    `Copying ${job.completed}/${job.total} files... ${job.current_file ? `(${job.current_file})` : ''}`;
+                setTimeout(() => this.pollImportProgress(), 500);
+            } else if (job.status === 'pending_conversion') {
+                // Import done, GoPro conversion needed
+                const imported = job.imported || {};
+                const total = Object.values(imported).reduce((a, b) => a + b, 0);
+                document.getElementById('import-progress-text').textContent =
+                    `Imported ${total} files. Starting GoPro conversion...`;
+
+                // Start conversion
+                await this.startGoproConversion();
+            } else if (job.status === 'completed') {
+                // All done (no conversion needed)
+                const imported = job.imported || {};
+                const total = Object.values(imported).reduce((a, b) => a + b, 0);
+                document.getElementById('import-progress-fill').style.width = '100%';
+                document.getElementById('import-progress-text').textContent =
+                    `Import complete! ${total} files (RAW: ${imported.RAW || 0}, JPEG: ${imported.JPEG || 0}, Video: ${imported.Video || 0})`;
+                App.showToast('Import complete!', 'success');
+                setTimeout(() => this.resetImport(), 3000);
+            } else {
+                // Unknown status, keep polling
+                setTimeout(() => this.pollImportProgress(), 1000);
+            }
+
+        } catch (error) {
+            console.error('Failed to poll import progress:', error);
+            setTimeout(() => this.pollImportProgress(), 2000);
+        }
+    },
+
+    /**
+     * Start GoPro conversion after import
+     */
+    async startGoproConversion() {
+        try {
+            const response = await fetch(`/api/import/jobs/${this.importJobId}/start-conversion`, {
+                method: 'POST',
+            });
+            const data = await response.json();
+            console.log('[Import] Conversion started:', data);
+
+            if (data.conversion_job_id) {
+                this.conversionJobId = data.conversion_job_id;
+                document.getElementById('conversion-progress')?.classList.remove('hidden');
+                this.pollConversionProgress();
+            } else {
+                // No conversion needed
+                App.showToast('Import complete!', 'success');
+                setTimeout(() => this.resetImport(), 3000);
+            }
+        } catch (error) {
+            console.error('Failed to start conversion:', error);
+            App.showToast('Import complete but conversion failed to start', 'warning');
+            setTimeout(() => this.resetImport(), 3000);
         }
     },
 
@@ -698,6 +763,7 @@ const Import = {
         this.scanResults = null;
         this.sourceSize = 0;
         this.conversionJobId = null;
+        this.importJobId = null;
         this.datePreviewData = null;
         this.selectedDates = new Set();
 

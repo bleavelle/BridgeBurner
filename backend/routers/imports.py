@@ -585,6 +585,56 @@ async def list_jobs():
     return {"jobs": active_jobs}
 
 
+@router.post("/jobs/{job_id}/start-conversion")
+async def start_gopro_conversion(job_id: str, background_tasks: BackgroundTasks):
+    """Start GoPro conversion for an import job that's pending conversion"""
+    if job_id not in active_jobs:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    job = active_jobs[job_id]
+    if job.get("status") != "pending_conversion":
+        raise HTTPException(status_code=400, detail=f"Job is not pending conversion: {job.get('status')}")
+
+    gopro_files = job.get("gopro_files", [])
+    if not gopro_files:
+        job["status"] = "completed"
+        return {"success": True, "message": "No GoPro files to convert"}
+
+    # Create conversion job ID
+    conversion_job_id = f"gopro_{job_id}"
+    active_jobs[conversion_job_id] = {
+        "type": "conversion",
+        "status": "queued",
+        "progress": 0,
+        "current_file": None,
+        "completed": 0,
+        "total": len(gopro_files),
+        "errors": [],
+    }
+
+    # Start conversion in background
+    background_tasks.add_task(
+        run_gopro_conversion,
+        conversion_job_id,
+        gopro_files,
+        job["project_path"],
+        job["file_prefix"],
+        job["video_counter"],
+        job["conversion_preset"],
+        job["delete_originals"],
+    )
+
+    # Update original job
+    job["status"] = "conversion_started"
+    job["conversion_job_id"] = conversion_job_id
+
+    return {
+        "success": True,
+        "conversion_job_id": conversion_job_id,
+        "total_files": len(gopro_files),
+    }
+
+
 @router.post("/convert")
 async def convert_single(request: ConvertRequest, background_tasks: BackgroundTasks):
     """Convert a single video file"""
@@ -716,21 +766,88 @@ class ImportRequestV2(BaseModel):
     selected_dates: List[str] = []  # Filter to only import files from these dates (empty = all)
 
 
-@router.post("/import-v2")
-async def import_files_v2(request: ImportRequestV2, background_tasks: BackgroundTasks):
-    """Import files with full v1 feature parity"""
-    source_path = request.source_path
-    project_name = request.project_name
-    library_path = get_library_path()
+def get_file_date_for_import(filepath, ext):
+    """Get file date (EXIF for images, mtime for others)"""
+    try:
+        mtime = os.path.getmtime(filepath)
+        date_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
 
-    if not os.path.exists(source_path):
-        raise HTTPException(status_code=404, detail=f"Source path not found: {source_path}")
+        # Try EXIF for JPEGs
+        if ext in IMAGE_EXTENSIONS:
+            try:
+                from PIL import Image
+                from PIL.ExifTags import TAGS
+                with Image.open(filepath) as img:
+                    exif = img._getexif()
+                    if exif:
+                        for tag_id, value in exif.items():
+                            tag = TAGS.get(tag_id, tag_id)
+                            if tag == "DateTimeOriginal":
+                                date_str = value.split(" ")[0].replace(":", "-")
+                                break
+            except Exception:
+                pass
+        return date_str
+    except Exception:
+        return None
 
-    project_path = os.path.join(library_path, project_name)
 
-    # Create subdirectories
-    for subdir in PROJECT_SUBDIRS:
-        os.makedirs(os.path.join(project_path, subdir), exist_ok=True)
+def count_files_to_import(source_path: str, selected_dates_set: set = None, convert_gopro: bool = True):
+    """Count how many files will be imported (for progress tracking)"""
+    total = 0
+    gopro_count = 0
+
+    for root, dirs, filenames in os.walk(source_path):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+
+        for filename in filenames:
+            if filename.startswith("."):
+                continue
+
+            filepath = os.path.join(root, filename)
+            ext = os.path.splitext(filename)[1].lower()
+            stem = os.path.splitext(filename)[0]
+
+            # Skip already converted files
+            if '_dnxhd' in stem.lower():
+                continue
+
+            # Date filter check (for images only)
+            if selected_dates_set and ext in (IMAGE_EXTENSIONS | RAW_EXTENSIONS):
+                file_date = get_file_date_for_import(filepath, ext)
+                if file_date and file_date not in selected_dates_set:
+                    continue
+
+            # Count the file
+            if ext in VIDEO_EXTENSIONS and convert_gopro and is_gopro_file(filepath):
+                gopro_count += 1  # Will be handled separately
+            else:
+                total += 1
+
+    return total, gopro_count
+
+
+def run_import_job(
+    job_id: str,
+    source_path: str,
+    project_path: str,
+    file_prefix: str,
+    notes: str,
+    selected_dates: list,
+    convert_gopro: bool,
+    conversion_preset: str,
+    delete_originals: bool,
+):
+    """Background task to import files with progress tracking"""
+    job = active_jobs[job_id]
+    job["status"] = "running"
+
+    selected_dates_set = set(selected_dates) if selected_dates else None
+
+    print(f"[Import] Starting import from {source_path}")
+    print(f"[Import] Job ID: {job_id}, Prefix: {file_prefix}")
+    if selected_dates_set:
+        print(f"[Import] Date filter active: {selected_dates_set}")
 
     # Get starting file numbers for each category
     def get_next_file_number(folder_path, prefix):
@@ -751,7 +868,7 @@ async def import_files_v2(request: ImportRequestV2, background_tasks: Background
     for subdir in PROJECT_SUBDIRS:
         counters[subdir] = get_next_file_number(
             os.path.join(project_path, subdir),
-            request.file_prefix
+            file_prefix
         )
 
     # Load or create metadata
@@ -760,59 +877,25 @@ async def import_files_v2(request: ImportRequestV2, background_tasks: Background
         with open(metadata_path, "r") as f:
             metadata = json.load(f)
         metadata["last_import"] = datetime.now().isoformat()
-        if request.notes:
-            metadata["notes"] = request.notes
+        if notes:
+            metadata["notes"] = notes
     else:
         metadata = {
-            "notes": request.notes,
+            "notes": notes,
             "created": datetime.now().isoformat(),
-            "project_name": project_name,
+            "project_name": os.path.basename(project_path),
             "culled_files": [],
             "session_notes": [],
             "import_source": source_path,
             "last_import": datetime.now().isoformat(),
         }
 
-    # Scan and organize files
     imported = {"RAW": 0, "JPEG": 0, "Video": 0, "Other": 0}
     gopro_files = []
     errors = []
-
-    print(f"[Import] Starting import from {source_path}")
-    print(f"[Import] Project: {project_name}, Prefix: {request.file_prefix}")
-
-    # Date filtering setup
-    selected_dates_set = set(request.selected_dates) if request.selected_dates else None
-    if selected_dates_set:
-        print(f"[Import] Date filter active: {selected_dates_set}")
-
-    def get_file_date(filepath, ext):
-        """Get file date (EXIF for images, mtime for others)"""
-        try:
-            mtime = os.path.getmtime(filepath)
-            date_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
-
-            # Try EXIF for JPEGs
-            if ext in IMAGE_EXTENSIONS:
-                try:
-                    from PIL import Image
-                    from PIL.ExifTags import TAGS
-                    with Image.open(filepath) as img:
-                        exif = img._getexif()
-                        if exif:
-                            for tag_id, value in exif.items():
-                                tag = TAGS.get(tag_id, tag_id)
-                                if tag == "DateTimeOriginal":
-                                    date_str = value.split(" ")[0].replace(":", "-")
-                                    break
-                except Exception:
-                    pass
-            return date_str
-        except Exception:
-            return None
-
-    file_count = 0
+    files_processed = 0
     skipped_by_date = 0
+
     for root, dirs, filenames in os.walk(source_path):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
 
@@ -830,12 +913,10 @@ async def import_files_v2(request: ImportRequestV2, background_tasks: Background
 
             # Date filter check (for images only)
             if selected_dates_set and ext in (IMAGE_EXTENSIONS | RAW_EXTENSIONS):
-                file_date = get_file_date(filepath, ext)
+                file_date = get_file_date_for_import(filepath, ext)
                 if file_date and file_date not in selected_dates_set:
                     skipped_by_date += 1
                     continue
-
-            file_count += 1
 
             # Determine destination subdirectory and check for GoPro
             if ext in RAW_EXTENSIONS:
@@ -846,7 +927,7 @@ async def import_files_v2(request: ImportRequestV2, background_tasks: Background
                 dest_subdir = "Video"
                 # Check if GoPro
                 if is_gopro_file(filepath):
-                    if request.convert_gopro:
+                    if convert_gopro:
                         gopro_files.append(filepath)
                         print(f"[Import] Queued GoPro for conversion: {filename}")
                         continue  # Will be handled by conversion job
@@ -855,8 +936,8 @@ async def import_files_v2(request: ImportRequestV2, background_tasks: Background
 
             # Generate new filename with prefix
             counter = counters[dest_subdir]
-            if request.file_prefix:
-                new_filename = f"{request.file_prefix}_{counter:04d}{ext}"
+            if file_prefix:
+                new_filename = f"{file_prefix}_{counter:04d}{ext}"
             else:
                 new_filename = filename
 
@@ -872,12 +953,20 @@ async def import_files_v2(request: ImportRequestV2, background_tasks: Background
 
             try:
                 print(f"[Import] Copying {filename} -> {dest_subdir}/{new_filename}")
-                if request.delete_originals:
+                if delete_originals:
                     shutil.move(filepath, dest_path)
                 else:
                     shutil.copy2(filepath, dest_path)
                 imported[dest_subdir] += 1
                 counters[dest_subdir] += 1
+                files_processed += 1
+
+                # Update job progress
+                if job["total"] > 0:
+                    job["progress"] = (files_processed / job["total"]) * 100
+                job["completed"] = files_processed
+                job["current_file"] = filename
+
             except Exception as e:
                 print(f"[Import] ERROR copying {filename}: {e}")
                 errors.append({"file": filename, "error": str(e)})
@@ -888,37 +977,84 @@ async def import_files_v2(request: ImportRequestV2, background_tasks: Background
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
-    # Start GoPro conversion if needed
-    job_id = None
-    if gopro_files and request.convert_gopro:
-        job_id = f"gopro_{project_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        active_jobs[job_id] = {
-            "status": "queued",
-            "progress": 0,
-            "current_file": None,
-            "completed": 0,
-            "total": len(gopro_files),
-            "errors": [],
-        }
+    # Update job with final results
+    job["imported"] = imported
+    job["gopro_files"] = gopro_files
+    job["gopro_count"] = len(gopro_files)
+    job["errors"] = errors
+    job["video_counter"] = counters["Video"]
+    job["conversion_preset"] = conversion_preset
+    job["delete_originals"] = delete_originals
+    job["project_path"] = project_path
+    job["file_prefix"] = file_prefix
 
-        background_tasks.add_task(
-            run_gopro_conversion,
-            job_id,
-            gopro_files,
-            project_path,
-            request.file_prefix,
-            counters["Video"],
-            request.conversion_preset,
-            request.delete_originals,
-        )
+    if gopro_files and convert_gopro:
+        # Mark as pending conversion
+        job["status"] = "pending_conversion"
+        job["progress"] = 100
+    else:
+        job["status"] = "completed"
+        job["progress"] = 100
+
+
+@router.post("/import-v2")
+async def import_files_v2(request: ImportRequestV2, background_tasks: BackgroundTasks):
+    """Import files with progress tracking"""
+    source_path = request.source_path
+    project_name = request.project_name
+    library_path = get_library_path()
+
+    if not os.path.exists(source_path):
+        raise HTTPException(status_code=404, detail=f"Source path not found: {source_path}")
+
+    project_path = os.path.join(library_path, project_name)
+
+    # Create subdirectories
+    for subdir in PROJECT_SUBDIRS:
+        os.makedirs(os.path.join(project_path, subdir), exist_ok=True)
+
+    # Count files to import (for progress tracking)
+    selected_dates_set = set(request.selected_dates) if request.selected_dates else None
+    total_files, gopro_count = count_files_to_import(
+        source_path,
+        selected_dates_set,
+        request.convert_gopro
+    )
+
+    print(f"[Import] Will import {total_files} files ({gopro_count} GoPro to convert)")
+
+    # Create import job
+    job_id = f"import_{project_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    active_jobs[job_id] = {
+        "type": "import",
+        "status": "queued",
+        "progress": 0,
+        "current_file": None,
+        "completed": 0,
+        "total": total_files,
+        "gopro_expected": gopro_count,
+        "errors": [],
+    }
+
+    # Start import in background
+    background_tasks.add_task(
+        run_import_job,
+        job_id,
+        source_path,
+        project_path,
+        request.file_prefix,
+        request.notes,
+        request.selected_dates,
+        request.convert_gopro,
+        request.conversion_preset,
+        request.delete_originals,
+    )
 
     return {
         "success": True,
-        "project_path": project_path,
-        "imported": imported,
-        "gopro_queued": len(gopro_files),
-        "errors": errors,
-        "conversion_job_id": job_id,
+        "job_id": job_id,
+        "total_files": total_files,
+        "gopro_expected": gopro_count,
     }
 
 
