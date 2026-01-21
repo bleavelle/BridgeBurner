@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#00FFFF">
+    <title>Bridge Burner - Kill Adobe Bridge!</title>
+    <link rel="manifest" href="/static/manifest.json">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="icon" type="image/png" href="/static/icon-192.png">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <h1 class="logo">
+            <span class="fire">🔥</span> Bridge Burner <span class="fire">🔥</span>
+        </h1>
+        <nav class="nav">
+            <button id="btn-projects" class="nav-btn active">Projects</button>
+            <button id="btn-import" class="nav-btn">Import</button>
+            <button id="btn-settings" class="nav-btn">Settings</button>
+        </nav>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main">
+        <!-- Project List View -->
+        <section id="view-projects" class="view active">
+            <div class="toolbar">
+                <h2>Select a Project</h2>
+                <span id="library-path" class="library-path"></span>
+            </div>
+            <div id="project-list" class="project-list">
+                <!-- Projects loaded dynamically -->
+            </div>
+        </section>
+
+        <!-- Project Detail View (Image Grid) -->
+        <section id="view-detail" class="view">
+            <div class="toolbar">
+                <button id="btn-back" class="btn btn-secondary">&larr; Back</button>
+                <h2 id="project-name">Project Name</h2>
+                <div class="toolbar-stats">
+                    <span id="stat-total">0 files</span>
+                    <span id="stat-culled" class="stat-culled">0 culled</span>
+                    <span id="stat-kept" class="stat-kept">0 kept</span>
+                </div>
+                <button id="btn-delete-culled" class="btn btn-danger">Delete Culled</button>
+            </div>
+
+            <!-- Filter tabs -->
+            <div class="filter-tabs">
+                <button class="filter-tab active" data-filter="all">All</button>
+                <button class="filter-tab" data-filter="kept">Kept</button>
+                <button class="filter-tab" data-filter="culled">Culled</button>
+                <button class="filter-tab" data-filter="image">Images</button>
+                <button class="filter-tab" data-filter="raw">RAW</button>
+                <button class="filter-tab" data-filter="video">Video</button>
+            </div>
+
+            <!-- Image Grid -->
+            <div id="image-grid" class="image-grid">
+                <!-- Images loaded dynamically -->
+            </div>
+        </section>
+
+        <!-- Import View -->
+        <section id="view-import" class="view">
+            <div class="toolbar">
+                <h2>Import Media</h2>
+                <span id="ffmpeg-status" class="ffmpeg-status"></span>
+            </div>
+
+            <div class="import-container">
+                <!-- Step 1: Select Source -->
+                <div class="import-step" id="import-step-1">
+                    <h3>Step 1: Select Source Folder</h3>
+                    <div class="form-group">
+                        <label for="import-source">Source Path</label>
+                        <div class="input-with-button">
+                            <input type="text" id="import-source" placeholder="Click Browse or paste a path">
+                            <button id="btn-browse" class="btn btn-secondary">Browse...</button>
+                        </div>
+                        <button id="btn-scan" class="btn btn-primary">Scan Folder</button>
+                    </div>
+                </div>
+
+                <!-- Step 2: Review Files -->
+                <div class="import-step hidden" id="import-step-2">
+                    <h3>Step 2: Review Found Files</h3>
+                    <div class="scan-results">
+                        <div class="scan-stat">
+                            <span class="scan-label">RAW:</span>
+                            <span id="scan-raw-count">0</span>
+                        </div>
+                        <div class="scan-stat">
+                            <span class="scan-label">JPEG:</span>
+                            <span id="scan-jpeg-count">0</span>
+                        </div>
+                        <div class="scan-stat">
+                            <span class="scan-label">Video:</span>
+                            <span id="scan-video-count">0</span>
+                        </div>
+                        <div class="scan-stat gopro-stat">
+                            <span class="scan-label">GoPro:</span>
+                            <span id="scan-gopro-count">0</span>
+                        </div>
+                        <div class="scan-stat">
+                            <span class="scan-label">Other:</span>
+                            <span id="scan-other-count">0</span>
+                        </div>
+                        <div class="scan-stat total-stat">
+                            <span class="scan-label">Source Size:</span>
+                            <span id="scan-total-size">0 MB</span>
+                        </div>
+                    </div>
+                    <!-- Disk Space Info -->
+                    <div class="disk-space-info">
+                        <div class="disk-stat">
+                            <span class="disk-label">Target Drive Free:</span>
+                            <span id="target-free-space">--</span>
+                        </div>
+                        <div class="disk-stat">
+                            <span class="disk-label">Estimated Required:</span>
+                            <span id="estimated-required">--</span>
+                        </div>
+                        <div id="disk-warning" class="disk-warning hidden">
+                            Not enough disk space!
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 3: Configure Import -->
+                <div class="import-step hidden" id="import-step-3">
+                    <h3>Step 3: Configure Import</h3>
+
+                    <!-- Project Mode Selection -->
+                    <div class="form-group">
+                        <label>Project Mode</label>
+                        <div class="radio-group">
+                            <label class="radio-label">
+                                <input type="radio" name="project-mode" value="new" checked>
+                                Create New Project
+                            </label>
+                            <label class="radio-label">
+                                <input type="radio" name="project-mode" value="existing">
+                                Add to Existing Project
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Existing Project Selector (hidden by default) -->
+                    <div class="form-group hidden" id="existing-project-group">
+                        <label for="existing-project">Select Project</label>
+                        <select id="existing-project">
+                            <option value="">-- Select Project --</option>
+                        </select>
+                        <p id="existing-project-info" class="help-text"></p>
+                    </div>
+
+                    <!-- New Project Name -->
+                    <div class="form-group" id="new-project-group">
+                        <label for="import-project-name">Project Name</label>
+                        <input type="text" id="import-project-name" placeholder="Summer Vacation 2024">
+                    </div>
+
+                    <!-- File Prefix -->
+                    <div class="form-group">
+                        <label for="import-file-prefix">File Name Prefix</label>
+                        <input type="text" id="import-file-prefix" placeholder="vacation">
+                        <p class="help-text">Files will be renamed to prefix_0001.ext, prefix_0002.ext, etc.</p>
+                    </div>
+
+                    <!-- Notes -->
+                    <div class="form-group">
+                        <label for="import-notes">Notes (optional)</label>
+                        <textarea id="import-notes" rows="2" placeholder="Trip to the beach with family..."></textarea>
+                    </div>
+
+                    <div class="form-group checkbox-group">
+                        <label>
+                            <input type="checkbox" id="import-convert" checked>
+                            Convert GoPro files for editing
+                        </label>
+                        <span id="gopro-warning" class="gopro-warning hidden">(GoPro files detected!)</span>
+                    </div>
+
+                    <!-- Conversion Options (shown when convert is checked) -->
+                    <div class="conversion-options hidden" id="conversion-options">
+                        <div class="form-group">
+                            <label for="conversion-preset">Conversion Preset</label>
+                            <select id="conversion-preset">
+                                <optgroup label="DNxHD/DNxHR (Resolve/Avid)">
+                                    <option value="dnxhd_1080p">DNxHD 1080p - Standard editing</option>
+                                    <option value="dnxhd_4k">DNxHR 4K - High quality 4K</option>
+                                </optgroup>
+                                <optgroup label="Apple ProRes">
+                                    <option value="prores_proxy">ProRes Proxy - Smallest</option>
+                                    <option value="prores_lt">ProRes LT - Balanced</option>
+                                    <option value="prores_422">ProRes 422 - Standard</option>
+                                    <option value="prores_hq">ProRes 422 HQ - High quality</option>
+                                </optgroup>
+                                <optgroup label="H.264/H.265 (Sharing)">
+                                    <option value="h264_high">H.264 High Quality</option>
+                                    <option value="h264_medium">H.264 Medium</option>
+                                    <option value="h265_high">H.265 High Quality</option>
+                                    <option value="h265_medium">H.265 Medium</option>
+                                </optgroup>
+                                <optgroup label="Other">
+                                    <option value="copy">Copy (Remux only)</option>
+                                </optgroup>
+                            </select>
+                        </div>
+                        <p id="preset-description" class="help-text"></p>
+                        <p id="size-estimate" class="help-text"></p>
+                    </div>
+
+                    <div class="form-group checkbox-group">
+                        <label>
+                            <input type="checkbox" id="import-delete-originals">
+                            Move files (delete originals after import)
+                        </label>
+                    </div>
+
+                    <div class="import-actions">
+                        <button id="btn-start-import" class="btn btn-primary btn-large">Start Import</button>
+                    </div>
+                </div>
+
+                <!-- Step 4: Progress -->
+                <div class="import-step hidden" id="import-step-4">
+                    <h3>Importing...</h3>
+                    <div class="progress-container">
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="import-progress-fill"></div>
+                        </div>
+                        <p id="import-progress-text">Starting import...</p>
+                    </div>
+                    <div id="conversion-progress" class="conversion-progress hidden">
+                        <h4>Converting Videos</h4>
+                        <p id="conversion-current-file"></p>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="conversion-progress-fill"></div>
+                        </div>
+                        <p id="conversion-progress-text"></p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Settings View -->
+        <section id="view-settings" class="view">
+            <div class="toolbar">
+                <h2>Settings</h2>
+            </div>
+            <div class="settings-form">
+                <div class="form-group">
+                    <label for="library-location">Library Location</label>
+                    <input type="text" id="library-location" readonly>
+                    <p class="help-text">Configure library location in .bridge_burner_config.json</p>
+                </div>
+                <div class="form-group">
+                    <label>FFmpeg Status</label>
+                    <p id="ffmpeg-version" class="help-text">Checking...</p>
+                </div>
+                <div class="form-group">
+                    <h3>Keyboard Shortcuts</h3>
+                    <ul class="shortcuts-list">
+                        <li><kbd>←</kbd> / <kbd>→</kbd> Navigate images</li>
+                        <li><kbd>X</kbd> Mark as culled</li>
+                        <li><kbd>K</kbd> Keep (unmark)</li>
+                        <li><kbd>Space</kbd> Toggle cull</li>
+                        <li><kbd>Esc</kbd> Close lightbox</li>
+                        <li><kbd>G</kbd> Open in GIMP</li>
+                    </ul>
+                </div>
+                <div class="form-group">
+                    <h3>About</h3>
+                    <p>Bridge Burner v2.0.0</p>
+                    <p>The open-source photo culling tool for photographers who cancelled Adobe.</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Lightbox -->
+    <div id="lightbox" class="lightbox">
+        <div class="lightbox-overlay"></div>
+        <div class="lightbox-content">
+            <button id="lightbox-close" class="lightbox-close">&times;</button>
+            <button id="lightbox-prev" class="lightbox-nav lightbox-prev">&larr;</button>
+            <button id="lightbox-next" class="lightbox-nav lightbox-next">&rarr;</button>
+            <div class="lightbox-image-container">
+                <img id="lightbox-image" src="" alt="">
+                <video id="lightbox-video" controls style="display: none;"></video>
+            </div>
+            <div class="lightbox-info">
+                <span id="lightbox-filename"></span>
+                <span id="lightbox-counter"></span>
+            </div>
+            <div class="lightbox-actions">
+                <button id="lightbox-cull" class="btn btn-danger">Cull (X)</button>
+                <button id="lightbox-keep" class="btn btn-success">Keep (K)</button>
+                <button id="lightbox-gimp" class="btn btn-secondary">Open in GIMP (G)</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Footer -->
+    <footer class="footer">
+        Made for Mom with love by the B Man
+    </footer>
+
+    <!-- Scripts -->
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/lightbox.js"></script>
+    <script src="/static/js/import.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

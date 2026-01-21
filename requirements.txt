@@ -1,0 +1,12 @@
+# Bridge Burner v2 - Dependencies
+
+# Web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Image processing
+Pillow>=10.0.0
+rawpy>=0.19.0  # For RAW file thumbnail extraction
+
+# Optional: for bundling as exe
+# pyinstaller>=6.0.0

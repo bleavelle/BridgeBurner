@@ -1,0 +1,394 @@
+/**
+ * Bridge Burner - Main Application
+ */
+
+const App = {
+    // Current state
+    currentProject: null,
+    files: [],
+    filteredFiles: [],
+    currentFilter: 'all',
+
+    // DOM elements (cached on init)
+    elements: {},
+
+    /**
+     * Initialize the application
+     */
+    init() {
+        this.cacheElements();
+        this.bindEvents();
+        this.loadProjects();
+        this.registerServiceWorker();
+    },
+
+    /**
+     * Cache DOM elements for performance
+     */
+    cacheElements() {
+        this.elements = {
+            // Views
+            viewProjects: document.getElementById('view-projects'),
+            viewDetail: document.getElementById('view-detail'),
+            viewImport: document.getElementById('view-import'),
+            viewSettings: document.getElementById('view-settings'),
+
+            // Navigation
+            btnProjects: document.getElementById('btn-projects'),
+            btnImport: document.getElementById('btn-import'),
+            btnSettings: document.getElementById('btn-settings'),
+            btnBack: document.getElementById('btn-back'),
+
+            // Project list
+            projectList: document.getElementById('project-list'),
+            libraryPath: document.getElementById('library-path'),
+
+            // Project detail
+            projectName: document.getElementById('project-name'),
+            imageGrid: document.getElementById('image-grid'),
+            statTotal: document.getElementById('stat-total'),
+            statCulled: document.getElementById('stat-culled'),
+            statKept: document.getElementById('stat-kept'),
+            btnDeleteCulled: document.getElementById('btn-delete-culled'),
+            filterTabs: document.querySelectorAll('.filter-tab'),
+
+            // Settings
+            libraryLocation: document.getElementById('library-location'),
+
+            // Toast
+            toastContainer: document.getElementById('toast-container'),
+        };
+    },
+
+    /**
+     * Bind event listeners
+     */
+    bindEvents() {
+        // Navigation
+        this.elements.btnProjects.addEventListener('click', () => this.showView('projects'));
+        this.elements.btnImport?.addEventListener('click', () => this.showView('import'));
+        this.elements.btnSettings.addEventListener('click', () => this.showView('settings'));
+        this.elements.btnBack.addEventListener('click', () => this.showView('projects'));
+
+        // Delete culled button
+        this.elements.btnDeleteCulled.addEventListener('click', () => this.deleteCulled());
+
+        // Filter tabs
+        this.elements.filterTabs.forEach(tab => {
+            tab.addEventListener('click', (e) => this.setFilter(e.target.dataset.filter));
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => this.handleKeyboard(e));
+    },
+
+    /**
+     * Show a specific view
+     */
+    showView(viewName) {
+        // Hide all views
+        document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+
+        // Update nav buttons
+        document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+
+        // Show selected view
+        if (viewName === 'projects') {
+            this.elements.viewProjects.classList.add('active');
+            this.elements.btnProjects.classList.add('active');
+            this.loadProjects();
+        } else if (viewName === 'detail') {
+            this.elements.viewDetail.classList.add('active');
+            this.elements.btnProjects.classList.add('active');
+        } else if (viewName === 'import') {
+            this.elements.viewImport?.classList.add('active');
+            this.elements.btnImport?.classList.add('active');
+        } else if (viewName === 'settings') {
+            this.elements.viewSettings.classList.add('active');
+            this.elements.btnSettings.classList.add('active');
+        }
+    },
+
+    /**
+     * Load and display projects
+     */
+    async loadProjects() {
+        try {
+            const data = await API.getProjects();
+            this.renderProjects(data.projects);
+            this.elements.libraryPath.textContent = data.library_path;
+            this.elements.libraryLocation.value = data.library_path;
+        } catch (error) {
+            this.showToast('Failed to load projects', 'error');
+            console.error(error);
+        }
+    },
+
+    /**
+     * Render project list
+     */
+    renderProjects(projects) {
+        if (projects.length === 0) {
+            this.elements.projectList.innerHTML = `
+                <div class="empty-state">
+                    <p>No projects found</p>
+                    <p class="help-text">Add project folders to your library directory</p>
+                </div>
+            `;
+            return;
+        }
+
+        this.elements.projectList.innerHTML = projects.map(project => `
+            <div class="project-card" data-project="${project.name}">
+                <h3 class="project-title">${this.escapeHtml(project.name)}</h3>
+                <div class="project-stats">
+                    <span>${project.total_files} files</span>
+                    <span class="stat-culled">${project.culled_count} culled</span>
+                </div>
+                ${project.notes ? `<p class="project-notes">${this.escapeHtml(project.notes)}</p>` : ''}
+            </div>
+        `).join('');
+
+        // Bind click events
+        this.elements.projectList.querySelectorAll('.project-card').forEach(card => {
+            card.addEventListener('click', () => this.openProject(card.dataset.project));
+        });
+    },
+
+    /**
+     * Open a project
+     */
+    async openProject(name) {
+        try {
+            const project = await API.getProject(name);
+            this.currentProject = project;
+            this.files = project.files;
+            this.elements.projectName.textContent = project.name;
+            this.setFilter('all');
+            this.updateStats();
+            this.showView('detail');
+        } catch (error) {
+            this.showToast('Failed to load project', 'error');
+            console.error(error);
+        }
+    },
+
+    /**
+     * Update stats display
+     */
+    updateStats() {
+        const total = this.files.length;
+        const culled = this.files.filter(f => f.culled).length;
+        const kept = total - culled;
+
+        this.elements.statTotal.textContent = `${total} files`;
+        this.elements.statCulled.textContent = `${culled} culled`;
+        this.elements.statKept.textContent = `${kept} kept`;
+    },
+
+    /**
+     * Set filter and re-render grid
+     */
+    setFilter(filter) {
+        this.currentFilter = filter;
+
+        // Update active tab
+        this.elements.filterTabs.forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.filter === filter);
+        });
+
+        // Filter files
+        this.filteredFiles = this.files.filter(file => {
+            if (filter === 'all') return true;
+            if (filter === 'kept') return !file.culled;
+            if (filter === 'culled') return file.culled;
+            return file.type === filter;
+        });
+
+        this.renderGrid();
+    },
+
+    /**
+     * Render image grid
+     */
+    renderGrid() {
+        if (this.filteredFiles.length === 0) {
+            this.elements.imageGrid.innerHTML = `
+                <div class="empty-state">
+                    <p>No files match the current filter</p>
+                </div>
+            `;
+            return;
+        }
+
+        this.elements.imageGrid.innerHTML = this.filteredFiles.map((file, index) => {
+            const thumbnailUrl = file.can_thumbnail
+                ? API.getThumbnailUrl(this.currentProject.name, file.filename)
+                : '';
+            const isVideo = file.type === 'video';
+
+            return `
+                <div class="grid-item ${file.culled ? 'culled' : ''}"
+                     data-index="${index}"
+                     data-filename="${this.escapeHtml(file.filename)}">
+                    ${file.can_thumbnail
+                        ? `<img src="${thumbnailUrl}" alt="${this.escapeHtml(file.filename)}" loading="lazy">`
+                        : `<div class="file-icon">${isVideo ? '🎬' : '📄'}</div>`
+                    }
+                    <div class="grid-item-info">
+                        <span class="filename">${this.escapeHtml(file.filename)}</span>
+                        ${file.culled ? '<span class="badge badge-culled">CULLED</span>' : ''}
+                    </div>
+                    <div class="grid-item-actions">
+                        <button class="btn-icon btn-cull" title="Cull (X)">✕</button>
+                        <button class="btn-icon btn-keep" title="Keep (K)">✓</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        // Bind click events
+        this.elements.imageGrid.querySelectorAll('.grid-item').forEach(item => {
+            // Open lightbox on image click
+            item.addEventListener('click', (e) => {
+                if (!e.target.closest('.grid-item-actions')) {
+                    const index = parseInt(item.dataset.index);
+                    Lightbox.open(this.filteredFiles, index, this.currentProject.name);
+                }
+            });
+
+            // Cull button
+            item.querySelector('.btn-cull').addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.toggleCull(item.dataset.filename, true);
+            });
+
+            // Keep button
+            item.querySelector('.btn-keep').addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.toggleCull(item.dataset.filename, false);
+            });
+        });
+    },
+
+    /**
+     * Toggle cull status for a file
+     */
+    async toggleCull(filename, cull) {
+        try {
+            if (cull) {
+                await API.cullFile(this.currentProject.name, filename);
+            } else {
+                await API.keepFile(this.currentProject.name, filename);
+            }
+
+            // Update local state
+            const file = this.files.find(f => f.filename === filename);
+            if (file) {
+                file.culled = cull;
+            }
+
+            // Update UI
+            this.updateStats();
+            this.renderGrid();
+            this.showToast(cull ? 'Marked as culled' : 'Marked as kept', 'success');
+
+        } catch (error) {
+            this.showToast('Failed to update file', 'error');
+            console.error(error);
+        }
+    },
+
+    /**
+     * Delete all culled files
+     */
+    async deleteCulled() {
+        const culledCount = this.files.filter(f => f.culled).length;
+        if (culledCount === 0) {
+            this.showToast('No culled files to delete', 'info');
+            return;
+        }
+
+        if (!confirm(`Are you sure you want to permanently delete ${culledCount} culled files? This cannot be undone!`)) {
+            return;
+        }
+
+        try {
+            const result = await API.deleteCulled(this.currentProject.name);
+            this.showToast(`Deleted ${result.total_deleted} files`, 'success');
+
+            // Refresh project
+            await this.openProject(this.currentProject.name);
+
+        } catch (error) {
+            this.showToast('Failed to delete files', 'error');
+            console.error(error);
+        }
+    },
+
+    /**
+     * Handle keyboard shortcuts
+     */
+    handleKeyboard(e) {
+        // Ignore if typing in an input
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+            return;
+        }
+
+        // Lightbox is open - let it handle keys
+        if (Lightbox.isOpen) {
+            return;
+        }
+
+        // Global shortcuts could go here
+    },
+
+    /**
+     * Show toast notification
+     */
+    showToast(message, type = 'info') {
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.textContent = message;
+
+        this.elements.toastContainer.appendChild(toast);
+
+        // Trigger animation
+        requestAnimationFrame(() => toast.classList.add('show'));
+
+        // Remove after delay
+        setTimeout(() => {
+            toast.classList.remove('show');
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    },
+
+    /**
+     * Escape HTML to prevent XSS
+     */
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    },
+
+    /**
+     * Register service worker for PWA
+     */
+    async registerServiceWorker() {
+        if ('serviceWorker' in navigator) {
+            try {
+                await navigator.serviceWorker.register('/static/sw.js');
+                console.log('Service Worker registered');
+            } catch (error) {
+                console.log('Service Worker registration failed:', error);
+            }
+        }
+    }
+};
+
+// Initialize on DOM ready
+document.addEventListener('DOMContentLoaded', () => App.init());
+
+// Export for use by other modules
+window.App = App;

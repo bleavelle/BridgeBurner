@@ -1,0 +1,774 @@
+"""
+Import and conversion endpoints for Bridge Burner v2
+Handles scanning folders, organizing files, and video conversion
+"""
+import os
+import json
+import shutil
+import asyncio
+from datetime import datetime
+from typing import Optional, List
+from fastapi import APIRouter, HTTPException, BackgroundTasks
+from pydantic import BaseModel
+
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from config import (
+    get_library_path,
+    PROJECT_SUBDIRS,
+    IMAGE_EXTENSIONS,
+    RAW_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+)
+from services.conversion import (
+    find_ffmpeg,
+    get_ffmpeg_version,
+    get_presets_list,
+    convert_video,
+    is_gopro_file,
+    ConversionPreset,
+    PRESETS,
+)
+
+router = APIRouter()
+
+# Track active conversion jobs
+active_jobs = {}
+
+
+class ScanRequest(BaseModel):
+    """Request to scan a folder"""
+    path: str
+
+
+class ImportRequest(BaseModel):
+    """Request to import files into a project"""
+    source_path: str
+    project_name: str
+    organize: bool = True  # Organize into RAW/JPEG/Video/Other subdirs
+    convert_videos: bool = False
+    conversion_preset: str = "dnxhd_1080p"
+    delete_originals: bool = False
+
+
+class ConvertRequest(BaseModel):
+    """Request to convert a single video"""
+    input_path: str
+    output_path: str
+    preset: str = "dnxhd_1080p"
+
+
+@router.get("/ffmpeg-status")
+async def ffmpeg_status():
+    """Check if ffmpeg is available and get version"""
+    ffmpeg_path = find_ffmpeg()
+    version = get_ffmpeg_version() if ffmpeg_path else None
+
+    return {
+        "available": ffmpeg_path is not None,
+        "path": ffmpeg_path,
+        "version": version,
+    }
+
+
+@router.get("/presets")
+async def list_presets():
+    """Get available conversion presets"""
+    return {"presets": get_presets_list()}
+
+
+@router.post("/browse-folder")
+async def browse_folder():
+    """Open native folder picker dialog and return selected path"""
+    import subprocess
+    import sys
+
+    # Use tkinter for cross-platform folder dialog
+    # Run in a subprocess to avoid tkinter/asyncio conflicts
+    script = '''
+import tkinter as tk
+from tkinter import filedialog
+root = tk.Tk()
+root.withdraw()
+root.attributes('-topmost', True)
+folder = filedialog.askdirectory(title="Select Source Folder")
+print(folder if folder else "")
+'''
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=120  # 2 minute timeout
+        )
+
+        path = result.stdout.strip()
+
+        if path:
+            return {"path": path, "cancelled": False}
+        else:
+            return {"path": None, "cancelled": True}
+
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=408, detail="Folder picker timed out")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to open folder picker: {str(e)}")
+
+
+@router.post("/scan")
+async def scan_folder(request: ScanRequest):
+    """Scan a folder and return file information"""
+    path = request.path
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Path not found: {path}")
+
+    if not os.path.isdir(path):
+        raise HTTPException(status_code=400, detail=f"Path is not a directory: {path}")
+
+    files = {
+        "raw": [],
+        "jpeg": [],
+        "video": [],
+        "gopro": [],
+        "other": [],
+    }
+
+    total_size = 0
+
+    for root, dirs, filenames in os.walk(path):
+        # Skip hidden directories
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+
+        for filename in filenames:
+            if filename.startswith("."):
+                continue
+
+            filepath = os.path.join(root, filename)
+            ext = os.path.splitext(filename)[1].lower()
+
+            try:
+                size = os.path.getsize(filepath)
+                total_size += size
+            except OSError:
+                size = 0
+
+            file_info = {
+                "filename": filename,
+                "path": filepath,
+                "size": size,
+                "relative_path": os.path.relpath(filepath, path),
+            }
+
+            if ext in RAW_EXTENSIONS:
+                files["raw"].append(file_info)
+            elif ext in IMAGE_EXTENSIONS:
+                files["jpeg"].append(file_info)
+            elif ext in VIDEO_EXTENSIONS:
+                # Check if it's a GoPro file
+                if is_gopro_file(filepath):
+                    file_info["is_gopro"] = True
+                    files["gopro"].append(file_info)
+                else:
+                    files["video"].append(file_info)
+            else:
+                files["other"].append(file_info)
+
+    return {
+        "path": path,
+        "files": files,
+        "counts": {
+            "raw": len(files["raw"]),
+            "jpeg": len(files["jpeg"]),
+            "video": len(files["video"]),
+            "gopro": len(files["gopro"]),
+            "other": len(files["other"]),
+            "total": sum(len(f) for f in files.values()),
+        },
+        "total_size": total_size,
+    }
+
+
+@router.post("/import")
+async def import_files(request: ImportRequest, background_tasks: BackgroundTasks):
+    """Import files from source folder into a project"""
+    source_path = request.source_path
+    project_name = request.project_name
+    library_path = get_library_path()
+
+    if not os.path.exists(source_path):
+        raise HTTPException(status_code=404, detail=f"Source path not found: {source_path}")
+
+    # Create project directory
+    project_path = os.path.join(library_path, project_name)
+
+    # Create subdirectories
+    for subdir in PROJECT_SUBDIRS:
+        os.makedirs(os.path.join(project_path, subdir), exist_ok=True)
+
+    # Create metadata file
+    metadata_path = os.path.join(project_path, ".metadata.json")
+    if not os.path.exists(metadata_path):
+        metadata = {
+            "notes": "",
+            "created": datetime.now().isoformat(),
+            "project_name": project_name,
+            "culled_files": [],
+            "session_notes": [],
+            "import_source": source_path,
+        }
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+
+    # Scan and organize files
+    imported = {"raw": 0, "jpeg": 0, "video": 0, "other": 0}
+    errors = []
+
+    for root, dirs, filenames in os.walk(source_path):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+
+        for filename in filenames:
+            if filename.startswith("."):
+                continue
+
+            filepath = os.path.join(root, filename)
+            ext = os.path.splitext(filename)[1].lower()
+
+            # Determine destination subdirectory
+            if ext in RAW_EXTENSIONS:
+                dest_subdir = "RAW"
+                imported["raw"] += 1
+            elif ext in IMAGE_EXTENSIONS:
+                dest_subdir = "JPEG"
+                imported["jpeg"] += 1
+            elif ext in VIDEO_EXTENSIONS:
+                dest_subdir = "Video"
+                imported["video"] += 1
+            else:
+                dest_subdir = "Other"
+                imported["other"] += 1
+
+            dest_path = os.path.join(project_path, dest_subdir, filename)
+
+            # Handle duplicate filenames
+            counter = 1
+            base_name = os.path.splitext(filename)[0]
+            while os.path.exists(dest_path):
+                new_filename = f"{base_name}_{counter}{ext}"
+                dest_path = os.path.join(project_path, dest_subdir, new_filename)
+                counter += 1
+
+            try:
+                if request.delete_originals:
+                    shutil.move(filepath, dest_path)
+                else:
+                    shutil.copy2(filepath, dest_path)
+            except Exception as e:
+                errors.append({"file": filename, "error": str(e)})
+
+    # If conversion requested, start background job
+    job_id = None
+    if request.convert_videos:
+        job_id = f"convert_{project_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        active_jobs[job_id] = {
+            "status": "queued",
+            "progress": 0,
+            "current_file": None,
+            "completed": 0,
+            "total": imported["video"],
+            "errors": [],
+        }
+
+        background_tasks.add_task(
+            run_batch_conversion,
+            job_id,
+            project_path,
+            request.conversion_preset,
+        )
+
+    return {
+        "success": True,
+        "project_path": project_path,
+        "imported": imported,
+        "errors": errors,
+        "conversion_job_id": job_id,
+    }
+
+
+async def run_batch_conversion(job_id: str, project_path: str, preset_name: str):
+    """Background task to convert all videos in a project"""
+    job = active_jobs[job_id]
+    job["status"] = "running"
+
+    video_dir = os.path.join(project_path, "Video")
+    if not os.path.exists(video_dir):
+        job["status"] = "completed"
+        return
+
+    # Get preset
+    try:
+        preset = ConversionPreset(preset_name)
+    except ValueError:
+        preset = ConversionPreset.DNXHD_1080P
+
+    settings = PRESETS[preset]
+
+    # Find all video files
+    video_files = []
+    for filename in os.listdir(video_dir):
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in VIDEO_EXTENSIONS:
+            video_files.append(filename)
+
+    job["total"] = len(video_files)
+
+    for i, filename in enumerate(video_files):
+        input_path = os.path.join(video_dir, filename)
+        base_name = os.path.splitext(filename)[0]
+        output_path = os.path.join(video_dir, base_name + settings.extension)
+
+        # Skip if already converted
+        if os.path.exists(output_path) and output_path != input_path:
+            job["completed"] += 1
+            continue
+
+        job["current_file"] = filename
+
+        def update_progress(progress, message):
+            job["progress"] = progress
+            job["current_message"] = message
+
+        result = convert_video(input_path, output_path, preset, update_progress)
+
+        if result["success"]:
+            job["completed"] += 1
+            # Optionally remove original after successful conversion
+            # if input_path != output_path:
+            #     os.remove(input_path)
+        else:
+            job["errors"].append({"file": filename, "error": result.get("error", "Unknown error")})
+
+        job["progress"] = ((i + 1) / len(video_files)) * 100
+
+    job["status"] = "completed"
+    job["current_file"] = None
+
+
+@router.get("/jobs/{job_id}")
+async def get_job_status(job_id: str):
+    """Get status of a conversion job"""
+    if job_id not in active_jobs:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    return active_jobs[job_id]
+
+
+@router.get("/jobs")
+async def list_jobs():
+    """List all conversion jobs"""
+    return {"jobs": active_jobs}
+
+
+@router.post("/convert")
+async def convert_single(request: ConvertRequest, background_tasks: BackgroundTasks):
+    """Convert a single video file"""
+    if not os.path.exists(request.input_path):
+        raise HTTPException(status_code=404, detail=f"Input file not found: {request.input_path}")
+
+    try:
+        preset = ConversionPreset(request.preset)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid preset: {request.preset}")
+
+    job_id = f"convert_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    active_jobs[job_id] = {
+        "status": "running",
+        "progress": 0,
+        "input": request.input_path,
+        "output": request.output_path,
+        "preset": request.preset,
+    }
+
+    def run_conversion():
+        def update_progress(progress, message):
+            active_jobs[job_id]["progress"] = progress
+
+        result = convert_video(request.input_path, request.output_path, preset, update_progress)
+        active_jobs[job_id]["status"] = "completed" if result["success"] else "failed"
+        active_jobs[job_id]["result"] = result
+
+    background_tasks.add_task(run_conversion)
+
+    return {"job_id": job_id, "status": "started"}
+
+
+@router.post("/detect-gopro")
+async def detect_gopro(request: ScanRequest):
+    """Scan a folder specifically for GoPro files"""
+    path = request.path
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Path not found: {path}")
+
+    gopro_files = []
+    total_size = 0
+
+    for root, dirs, filenames in os.walk(path):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+
+        for filename in filenames:
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in VIDEO_EXTENSIONS:
+                continue
+
+            filepath = os.path.join(root, filename)
+
+            if is_gopro_file(filepath):
+                try:
+                    size = os.path.getsize(filepath)
+                    total_size += size
+                except OSError:
+                    size = 0
+
+                gopro_files.append({
+                    "filename": filename,
+                    "path": filepath,
+                    "size": size,
+                })
+
+    return {
+        "path": path,
+        "gopro_files": gopro_files,
+        "count": len(gopro_files),
+        "total_size": total_size,
+    }
+
+
+@router.get("/disk-space")
+async def get_disk_space(path: str = None):
+    """Get disk space information for a path"""
+    if path is None:
+        path = get_library_path()
+
+    # Get the drive root from the path
+    if os.path.exists(path):
+        drive = os.path.splitdrive(path)[0] or path
+    else:
+        # Try to get drive from parent paths
+        test_path = path
+        while test_path and not os.path.exists(test_path):
+            parent = os.path.dirname(test_path)
+            if parent == test_path:
+                break
+            test_path = parent
+        drive = os.path.splitdrive(test_path)[0] if test_path else "C:"
+
+    try:
+        if drive:
+            # Add backslash for Windows drive letters
+            if len(drive) == 2 and drive[1] == ':':
+                drive = drive + '\\'
+            usage = shutil.disk_usage(drive)
+            return {
+                "path": path,
+                "drive": drive,
+                "total": usage.total,
+                "used": usage.used,
+                "free": usage.free,
+                "percent_used": (usage.used / usage.total) * 100,
+            }
+    except Exception as e:
+        return {
+            "path": path,
+            "error": str(e),
+        }
+
+    return {"path": path, "error": "Could not determine disk space"}
+
+
+class ImportRequestV2(BaseModel):
+    """Enhanced import request with all v1 features"""
+    source_path: str
+    project_name: str
+    file_prefix: str = ""
+    notes: str = ""
+    organize: bool = True
+    convert_gopro: bool = True
+    conversion_preset: str = "dnxhd_1080p"
+    delete_originals: bool = False
+    add_to_existing: bool = False
+
+
+@router.post("/import-v2")
+async def import_files_v2(request: ImportRequestV2, background_tasks: BackgroundTasks):
+    """Import files with full v1 feature parity"""
+    source_path = request.source_path
+    project_name = request.project_name
+    library_path = get_library_path()
+
+    if not os.path.exists(source_path):
+        raise HTTPException(status_code=404, detail=f"Source path not found: {source_path}")
+
+    project_path = os.path.join(library_path, project_name)
+
+    # Create subdirectories
+    for subdir in PROJECT_SUBDIRS:
+        os.makedirs(os.path.join(project_path, subdir), exist_ok=True)
+
+    # Get starting file numbers for each category
+    def get_next_file_number(folder_path, prefix):
+        if not os.path.exists(folder_path) or not prefix:
+            return 1
+        max_num = 0
+        for filename in os.listdir(folder_path):
+            if filename.startswith('.'):
+                continue
+            name = os.path.splitext(filename)[0]
+            if name.startswith(prefix + '_'):
+                parts = name.rsplit('_', 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    max_num = max(max_num, int(parts[1]))
+        return max_num + 1
+
+    counters = {}
+    for subdir in PROJECT_SUBDIRS:
+        counters[subdir] = get_next_file_number(
+            os.path.join(project_path, subdir),
+            request.file_prefix
+        )
+
+    # Load or create metadata
+    metadata_path = os.path.join(project_path, ".metadata.json")
+    if os.path.exists(metadata_path):
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
+        metadata["last_import"] = datetime.now().isoformat()
+        if request.notes:
+            metadata["notes"] = request.notes
+    else:
+        metadata = {
+            "notes": request.notes,
+            "created": datetime.now().isoformat(),
+            "project_name": project_name,
+            "culled_files": [],
+            "session_notes": [],
+            "import_source": source_path,
+            "last_import": datetime.now().isoformat(),
+        }
+
+    # Scan and organize files
+    imported = {"RAW": 0, "JPEG": 0, "Video": 0, "Other": 0}
+    gopro_files = []
+    errors = []
+
+    print(f"[Import] Starting import from {source_path}")
+    print(f"[Import] Project: {project_name}, Prefix: {request.file_prefix}")
+
+    file_count = 0
+    for root, dirs, filenames in os.walk(source_path):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+
+        for filename in filenames:
+            if filename.startswith("."):
+                continue
+
+            filepath = os.path.join(root, filename)
+            ext = os.path.splitext(filename)[1].lower()
+            stem = os.path.splitext(filename)[0]
+
+            # Skip already converted files
+            if '_dnxhd' in stem.lower():
+                continue
+
+            file_count += 1
+
+            # Determine destination subdirectory and check for GoPro
+            if ext in RAW_EXTENSIONS:
+                dest_subdir = "RAW"
+            elif ext in IMAGE_EXTENSIONS:
+                dest_subdir = "JPEG"
+            elif ext in VIDEO_EXTENSIONS:
+                dest_subdir = "Video"
+                # Check if GoPro
+                if is_gopro_file(filepath):
+                    if request.convert_gopro:
+                        gopro_files.append(filepath)
+                        print(f"[Import] Queued GoPro for conversion: {filename}")
+                        continue  # Will be handled by conversion job
+            else:
+                dest_subdir = "Other"
+
+            # Generate new filename with prefix
+            counter = counters[dest_subdir]
+            if request.file_prefix:
+                new_filename = f"{request.file_prefix}_{counter:04d}{ext}"
+            else:
+                new_filename = filename
+
+            dest_path = os.path.join(project_path, dest_subdir, new_filename)
+
+            # Handle duplicates
+            dup_counter = 1
+            base_new_name = os.path.splitext(new_filename)[0]
+            while os.path.exists(dest_path):
+                new_filename = f"{base_new_name}_{dup_counter}{ext}"
+                dest_path = os.path.join(project_path, dest_subdir, new_filename)
+                dup_counter += 1
+
+            try:
+                print(f"[Import] Copying {filename} -> {dest_subdir}/{new_filename}")
+                if request.delete_originals:
+                    shutil.move(filepath, dest_path)
+                else:
+                    shutil.copy2(filepath, dest_path)
+                imported[dest_subdir] += 1
+                counters[dest_subdir] += 1
+            except Exception as e:
+                print(f"[Import] ERROR copying {filename}: {e}")
+                errors.append({"file": filename, "error": str(e)})
+
+    print(f"[Import] Done! Copied {sum(imported.values())} files, {len(gopro_files)} GoPro queued for conversion")
+
+    # Save metadata
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    # Start GoPro conversion if needed
+    job_id = None
+    if gopro_files and request.convert_gopro:
+        job_id = f"gopro_{project_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        active_jobs[job_id] = {
+            "status": "queued",
+            "progress": 0,
+            "current_file": None,
+            "completed": 0,
+            "total": len(gopro_files),
+            "errors": [],
+        }
+
+        background_tasks.add_task(
+            run_gopro_conversion,
+            job_id,
+            gopro_files,
+            project_path,
+            request.file_prefix,
+            counters["Video"],
+            request.conversion_preset,
+            request.delete_originals,
+        )
+
+    return {
+        "success": True,
+        "project_path": project_path,
+        "imported": imported,
+        "gopro_queued": len(gopro_files),
+        "errors": errors,
+        "conversion_job_id": job_id,
+    }
+
+
+def run_gopro_conversion(
+    job_id: str,
+    gopro_files: list,
+    project_path: str,
+    file_prefix: str,
+    start_counter: int,
+    preset_name: str,
+    delete_originals: bool,
+):
+    """Background task to convert GoPro files"""
+    print(f"[Conversion] Starting job {job_id} with {len(gopro_files)} files")
+    job = active_jobs[job_id]
+    job["status"] = "running"
+
+    video_dir = os.path.join(project_path, "Video")
+
+    try:
+        preset = ConversionPreset(preset_name)
+    except ValueError:
+        preset = ConversionPreset.DNXHD_1080P
+
+    settings = PRESETS[preset]
+    counter = start_counter
+    print(f"[Conversion] Using preset: {preset_name}, extension: {settings.extension}")
+
+    for i, input_path in enumerate(gopro_files):
+        if file_prefix:
+            output_filename = f"{file_prefix}_{counter:04d}{settings.extension}"
+        else:
+            output_filename = os.path.splitext(os.path.basename(input_path))[0] + settings.extension
+
+        output_path = os.path.join(video_dir, output_filename)
+
+        job["current_file"] = os.path.basename(input_path)
+        print(f"[Conversion] [{i+1}/{len(gopro_files)}] Converting {os.path.basename(input_path)} -> {output_filename}")
+
+        def update_progress(progress, message):
+            file_progress = (i + (progress / 100)) / len(gopro_files) * 100
+            job["progress"] = file_progress
+            job["current_message"] = message
+            if int(progress) % 10 == 0:  # Print every 10%
+                print(f"[Conversion] {os.path.basename(input_path)}: {progress:.0f}%")
+
+        result = convert_video(input_path, output_path, preset, update_progress)
+
+        if result["success"]:
+            print(f"[Conversion] SUCCESS: {output_filename}")
+            job["completed"] += 1
+            counter += 1
+            if delete_originals:
+                try:
+                    os.remove(input_path)
+                except Exception:
+                    pass
+        else:
+            print(f"[Conversion] FAILED: {os.path.basename(input_path)} - {result.get('error', 'Unknown error')}")
+            job["errors"].append({
+                "file": os.path.basename(input_path),
+                "error": result.get("error", "Unknown error")
+            })
+
+        job["progress"] = ((i + 1) / len(gopro_files)) * 100
+
+    job["status"] = "completed"
+    job["current_file"] = None
+    print(f"[Conversion] Job {job_id} completed. {job['completed']}/{len(gopro_files)} successful")
+
+
+@router.get("/project-info/{name}")
+async def get_project_info(name: str):
+    """Get info about an existing project for 'add to existing' feature"""
+    library_path = get_library_path()
+    project_path = os.path.join(library_path, name)
+
+    if not os.path.exists(project_path):
+        raise HTTPException(status_code=404, detail=f"Project not found: {name}")
+
+    metadata_path = os.path.join(project_path, ".metadata.json")
+    metadata = {}
+    if os.path.exists(metadata_path):
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
+
+    # Detect file prefix from existing files
+    detected_prefix = ""
+    for subdir in PROJECT_SUBDIRS:
+        subdir_path = os.path.join(project_path, subdir)
+        if os.path.exists(subdir_path):
+            files = [f for f in os.listdir(subdir_path) if not f.startswith('.')]
+            if files:
+                first_file = files[0]
+                name_part = os.path.splitext(first_file)[0]
+                parts = name_part.rsplit('_', 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    detected_prefix = parts[0]
+                    break
+
+    return {
+        "name": name,
+        "path": project_path,
+        "metadata": metadata,
+        "detected_prefix": detected_prefix,
+    }
