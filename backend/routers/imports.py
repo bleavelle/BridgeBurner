@@ -878,7 +878,13 @@ def run_import_job(
             metadata = json.load(f)
         metadata["last_import"] = datetime.now().isoformat()
         if notes:
-            metadata["notes"] = notes
+            # Append new notes to existing notes
+            existing_notes = metadata.get("notes", "")
+            if existing_notes:
+                timestamp = datetime.now().strftime("%Y-%m-%d")
+                metadata["notes"] = f"{existing_notes}\n\n--- {timestamp} ---\n{notes}"
+            else:
+                metadata["notes"] = notes
     else:
         metadata = {
             "notes": notes,

@@ -175,7 +175,7 @@ const Lightbox = {
             if (mainFile) mainFile.culled = true;
             App.updateStats();
 
-            App.showToast('Marked as culled', 'success');
+            App.showToast('Marked as culled', 'error');
 
             // Auto-advance to next image
             if (this.currentIndex < this.files.length - 1) {

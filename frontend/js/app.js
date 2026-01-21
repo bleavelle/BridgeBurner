@@ -282,11 +282,18 @@ const App = {
                 ? API.getThumbnailUrl(this.currentProject.name, file.filename)
                 : '';
             const isVideo = file.type === 'video';
+            const hasEdits = file.has_xcf || file.has_tif;
 
             return `
                 <div class="grid-item ${file.culled ? 'culled' : ''}"
                      data-index="${index}"
                      data-filename="${this.escapeHtml(file.filename)}">
+                    ${hasEdits ? `
+                        <div class="edit-indicators">
+                            ${file.has_xcf ? '<span class="edit-badge badge-xcf" title="Has GIMP project">XCF</span>' : ''}
+                            ${file.has_tif ? '<span class="edit-badge badge-tif" title="Has TIFF export">TIF</span>' : ''}
+                        </div>
+                    ` : ''}
                     ${file.can_thumbnail
                         ? `<img src="${thumbnailUrl}" alt="${this.escapeHtml(file.filename)}" loading="lazy">`
                         : `<div class="file-icon">${isVideo ? '🎬' : '📄'}</div>`
@@ -347,7 +354,7 @@ const App = {
             // Update UI
             this.updateStats();
             this.renderGrid();
-            this.showToast(cull ? 'Marked as culled' : 'Marked as kept', 'success');
+            this.showToast(cull ? 'Marked as culled' : 'Marked as kept', cull ? 'error' : 'success');
 
         } catch (error) {
             this.showToast('Failed to update file', 'error');

@@ -400,6 +400,35 @@ body {
     color: var(--white);
 }
 
+/* Edit indicators (XCF/TIF badges) */
+.edit-indicators {
+    position: absolute;
+    top: var(--space-xs);
+    left: var(--space-xs);
+    display: flex;
+    gap: 4px;
+    z-index: 10;
+}
+
+.edit-badge {
+    font-size: 0.6rem;
+    font-weight: bold;
+    padding: 2px 5px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.badge-xcf {
+    background: var(--purple);
+    color: var(--white);
+}
+
+.badge-tif {
+    background: var(--lime);
+    color: var(--black);
+}
+
 .grid-item-actions {
     position: absolute;
     top: var(--space-sm);

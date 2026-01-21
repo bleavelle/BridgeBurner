@@ -133,10 +133,26 @@ async def get_project(name: str):
     files = get_project_files(project_path)
     culled_files = set(metadata.get("culled_files", []))
 
+    # Build set of existing GIMP projects and TIFFs for quick lookup
+    gimp_temp_dir = os.path.join(project_path, ".gimp_temp")
+    existing_xcf = set()
+    existing_tif = set()
+    if os.path.exists(gimp_temp_dir):
+        for f in os.listdir(gimp_temp_dir):
+            base = os.path.splitext(f)[0]
+            if f.lower().endswith(".xcf"):
+                existing_xcf.add(base.lower())
+            elif f.lower().endswith((".tif", ".tiff")):
+                existing_tif.add(base.lower())
+
     file_list = []
     for filepath in files:
         info = get_file_info(filepath)
         info["culled"] = info["filename"] in culled_files
+        # Check if this file has associated GIMP project or TIFF
+        base_name = os.path.splitext(info["filename"])[0].lower()
+        info["has_xcf"] = base_name in existing_xcf
+        info["has_tif"] = base_name in existing_tif
         file_list.append(info)
 
     # Sort by filename
