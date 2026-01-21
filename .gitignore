@@ -27,3 +27,13 @@ Thumbs.db
 # Project
 *.log
 .bridge_burner_config.json
+
+# Claude Code
+.claude/
+
+# PyInstaller
+*.spec
+nul
+
+# Windows shortcuts
+*.lnk
