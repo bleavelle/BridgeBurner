@@ -6,6 +6,7 @@ import os
 import subprocess
 import shutil
 import re
+import time
 from typing import Optional, Dict, Any, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -34,6 +35,7 @@ class ConversionSettings:
     extension: str
     ffmpeg_args: list
     estimated_size_multiplier: float  # Relative to source
+    estimated_speed: float  # Multiplier vs real-time (0.5 = takes 2x video duration)
 
 
 # Preset configurations
@@ -49,6 +51,7 @@ PRESETS: Dict[ConversionPreset, ConversionSettings] = {
             "-c:a", "pcm_s16le",
         ],
         estimated_size_multiplier=17.0,
+        estimated_speed=0.8,  # Fast encode
     ),
     ConversionPreset.DNXHD_4K: ConversionSettings(
         name="DNxHR 4K",
@@ -61,6 +64,7 @@ PRESETS: Dict[ConversionPreset, ConversionSettings] = {
             "-c:a", "pcm_s16le",
         ],
         estimated_size_multiplier=20.0,
+        estimated_speed=0.4,  # 4K is slower
     ),
     ConversionPreset.PRORES_PROXY: ConversionSettings(
         name="ProRes Proxy",
@@ -73,6 +77,7 @@ PRESETS: Dict[ConversionPreset, ConversionSettings] = {
             "-c:a", "pcm_s16le",
         ],
         estimated_size_multiplier=3.0,
+        estimated_speed=0.6,
     ),
     ConversionPreset.PRORES_LT: ConversionSettings(
         name="ProRes LT",
@@ -85,6 +90,7 @@ PRESETS: Dict[ConversionPreset, ConversionSettings] = {
             "-c:a", "pcm_s16le",
         ],
         estimated_size_multiplier=6.0,
+        estimated_speed=0.5,
     ),
     ConversionPreset.PRORES_422: ConversionSettings(
         name="ProRes 422",
@@ -97,6 +103,7 @@ PRESETS: Dict[ConversionPreset, ConversionSettings] = {
             "-c:a", "pcm_s16le",
         ],
         estimated_size_multiplier=10.0,
+        estimated_speed=0.4,
     ),
     ConversionPreset.PRORES_HQ: ConversionSettings(
         name="ProRes 422 HQ",
@@ -109,6 +116,7 @@ PRESETS: Dict[ConversionPreset, ConversionSettings] = {
             "-c:a", "pcm_s16le",
         ],
         estimated_size_multiplier=15.0,
+        estimated_speed=0.35,
     ),
     ConversionPreset.H264_HIGH: ConversionSettings(
         name="H.264 High Quality",
@@ -122,6 +130,7 @@ PRESETS: Dict[ConversionPreset, ConversionSettings] = {
             "-b:a", "192k",
         ],
         estimated_size_multiplier=0.8,
+        estimated_speed=0.3,  # slow preset
     ),
     ConversionPreset.H264_MEDIUM: ConversionSettings(
         name="H.264 Medium",
@@ -135,6 +144,7 @@ PRESETS: Dict[ConversionPreset, ConversionSettings] = {
             "-b:a", "128k",
         ],
         estimated_size_multiplier=0.5,
+        estimated_speed=0.6,  # medium preset
     ),
     ConversionPreset.H265_HIGH: ConversionSettings(
         name="H.265 High Quality",
@@ -148,6 +158,7 @@ PRESETS: Dict[ConversionPreset, ConversionSettings] = {
             "-b:a", "192k",
         ],
         estimated_size_multiplier=0.5,
+        estimated_speed=0.15,  # HEVC slow is very slow
     ),
     ConversionPreset.H265_MEDIUM: ConversionSettings(
         name="H.265 Medium",
@@ -161,6 +172,7 @@ PRESETS: Dict[ConversionPreset, ConversionSettings] = {
             "-b:a", "128k",
         ],
         estimated_size_multiplier=0.3,
+        estimated_speed=0.25,  # HEVC medium
     ),
     ConversionPreset.COPY: ConversionSettings(
         name="Copy (Remux)",
@@ -171,8 +183,29 @@ PRESETS: Dict[ConversionPreset, ConversionSettings] = {
             "-c:a", "copy",
         ],
         estimated_size_multiplier=1.0,
+        estimated_speed=10.0,  # Very fast, just copying
     ),
 }
+
+
+def estimate_conversion_time(duration_seconds: float, preset: ConversionPreset) -> float:
+    """
+    Estimate how long a conversion will take in seconds.
+
+    Args:
+        duration_seconds: Video duration in seconds
+        preset: Conversion preset to use
+
+    Returns:
+        Estimated conversion time in seconds
+    """
+    settings = PRESETS.get(preset)
+    if not settings:
+        return duration_seconds * 2  # Default fallback
+
+    # estimated_speed is a multiplier vs real-time
+    # 0.5 means it processes at 0.5x real-time, so takes 2x the duration
+    return duration_seconds / settings.estimated_speed
 
 
 def find_ffmpeg() -> Optional[str]:
@@ -302,10 +335,10 @@ def convert_video(
         input_path: Path to input video
         output_path: Path for output video (extension will be adjusted based on preset)
         preset: Conversion preset to use
-        progress_callback: Optional callback(progress_percent, status_message)
+        progress_callback: Optional callback(progress_percent, status_message) - called periodically during conversion
 
     Returns:
-        Dict with success status and details
+        Dict with success status, output_path, duration, and estimated_time
     """
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
@@ -323,70 +356,68 @@ def convert_video(
     # Ensure output directory exists
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    # Get input duration for progress tracking
+    # Get input file info
+    input_size = os.path.getsize(input_path)
     duration = None
     info = get_video_info(input_path)
     if info:
         format_info = info.get("format", {})
         duration = float(format_info.get("duration", 0))
 
-    # Build ffmpeg command
+    # Estimate output size for progress tracking
+    estimated_output_size = input_size * settings.estimated_size_multiplier
+
+    # Build ffmpeg command (no progress flag - we'll monitor file size instead)
     cmd = [
         ffmpeg,
         "-y",  # Overwrite output
         "-i", input_path,
         *settings.ffmpeg_args,
-        "-progress", "pipe:1",  # Output progress to stdout
         output_path,
     ]
 
     try:
         print(f"[FFmpeg] Starting: {os.path.basename(input_path)}")
-        print(f"[FFmpeg] Duration: {duration}s")
+        print(f"[FFmpeg] Duration: {duration}s, Input size: {input_size / 1024 / 1024:.1f}MB")
+        print(f"[FFmpeg] Estimated output: {estimated_output_size / 1024 / 1024:.1f}MB")
 
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            bufsize=1,  # Line buffered for real-time progress
-            universal_newlines=True,
         )
 
-        # Parse progress output - use readline() for unbuffered reading
-        current_time = 0
+        # Monitor progress using time-based estimation
+        # File size monitoring is unreliable due to OS buffering
+        start_time = time.time()
+        estimated_duration = estimate_conversion_time(duration, preset) if duration else 60
         last_print_progress = -1
-        while True:
-            line = process.stdout.readline()
-            if not line and process.poll() is not None:
-                break
-            line = line.strip()
-            if line.startswith("out_time_ms="):
-                try:
-                    time_ms = int(line.split("=")[1])
-                    current_time = time_ms / 1000000  # Convert to seconds
-                    if duration and duration > 0:
-                        progress = min(100, (current_time / duration) * 100)
-                        # Always call the callback so UI updates
-                        if progress_callback:
-                            progress_callback(progress, f"Converting... {progress:.1f}%")
-                        # Only print to console every 5%
-                        if int(progress / 5) > int(last_print_progress / 5):
-                            print(f"[FFmpeg] Progress: {progress:.1f}%")
-                            last_print_progress = progress
-                except ValueError:
-                    pass
 
-        process.wait()
+        while process.poll() is None:
+            time.sleep(0.5)
+            elapsed = time.time() - start_time
+            progress = min(95, (elapsed / estimated_duration) * 100)  # Cap at 95% until done
+
+            if progress_callback:
+                progress_callback(progress, f"Converting... {progress:.1f}%")
+            if int(progress / 5) > int(last_print_progress / 5):
+                print(f"[FFmpeg] Progress: {progress:.1f}% (elapsed: {elapsed:.0f}s / est: {estimated_duration:.0f}s)")
+                last_print_progress = progress
+
         print(f"[FFmpeg] Process finished with code: {process.returncode}")
 
         if process.returncode == 0:
+            # Final callback at 100%
+            if progress_callback:
+                progress_callback(100, "Complete")
             return {
                 "success": True,
                 "output_path": output_path,
                 "preset": preset.value,
+                "duration": duration,
             }
         else:
-            stderr = process.stderr.read() if process.stderr else ""
+            stderr = process.stderr.read().decode() if process.stderr else ""
             return {
                 "success": False,
                 "error": f"ffmpeg failed: {stderr[:500]}",
