@@ -7,7 +7,7 @@ import subprocess
 import shutil
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -91,6 +91,20 @@ def is_valid_project(folder_path: str) -> bool:
     return False
 
 
+def generate_missing_thumbnails(project_path: str, files: list):
+    """Background task to generate thumbnails for files that don't have them yet"""
+    from services.thumbnails import get_thumbnail_dir, get_thumbnail_filename
+
+    thumb_dir = get_thumbnail_dir(project_path)
+    existing_thumbs = set(os.listdir(thumb_dir)) if os.path.exists(thumb_dir) else set()
+
+    for filepath in files:
+        thumb_filename = get_thumbnail_filename(filepath)
+        if thumb_filename not in existing_thumbs:
+            # Generate the thumbnail
+            get_or_create_thumbnail(filepath, project_path)
+
+
 @router.get("")
 async def list_projects():
     """List all projects in the library"""
@@ -121,7 +135,7 @@ async def list_projects():
 
 
 @router.get("/{name}")
-async def get_project(name: str):
+async def get_project(name: str, background_tasks: BackgroundTasks):
     """Get project details and file list"""
     library_path = get_library_path()
     project_path = os.path.join(library_path, name)
@@ -132,6 +146,10 @@ async def get_project(name: str):
     metadata = load_metadata(project_path)
     files = get_project_files(project_path)
     culled_files = set(metadata.get("culled_files", []))
+    kept_files = set(metadata.get("kept_files", []))
+
+    # Generate missing thumbnails in background
+    background_tasks.add_task(generate_missing_thumbnails, project_path, files)
 
     # Build set of existing GIMP projects and TIFFs for quick lookup
     gimp_temp_dir = os.path.join(project_path, ".gimp_temp")
@@ -149,6 +167,7 @@ async def get_project(name: str):
     for filepath in files:
         info = get_file_info(filepath)
         info["culled"] = info["filename"] in culled_files
+        info["kept"] = info["filename"] in kept_files
         # Check if this file has associated GIMP project or TIFF
         base_name = os.path.splitext(info["filename"])[0].lower()
         info["has_xcf"] = base_name in existing_xcf
@@ -158,6 +177,11 @@ async def get_project(name: str):
     # Sort by filename
     file_list.sort(key=lambda f: f["filename"].lower())
 
+    # Calculate stats
+    culled_count = len([f for f in file_list if f["culled"]])
+    kept_count = len([f for f in file_list if f["kept"]])
+    unassigned_count = len(file_list) - culled_count - kept_count
+
     return {
         "name": name,
         "path": project_path,
@@ -165,8 +189,9 @@ async def get_project(name: str):
         "metadata": metadata,
         "stats": {
             "total": len(files),
-            "culled": len(culled_files),
-            "kept": len(files) - len([f for f in file_list if f["culled"]]),
+            "culled": culled_count,
+            "kept": kept_count,
+            "unassigned": unassigned_count,
         },
     }
 
@@ -245,8 +270,13 @@ async def cull_file(name: str, request: CullRequest):
 
     metadata = load_metadata(project_path)
     culled_files = set(metadata.get("culled_files", []))
+    kept_files = set(metadata.get("kept_files", []))
+
     culled_files.add(request.filename)
+    kept_files.discard(request.filename)  # Remove from kept if it was there
+
     metadata["culled_files"] = list(culled_files)
+    metadata["kept_files"] = list(kept_files)
     save_metadata(project_path, metadata)
 
     return {"status": "culled", "filename": request.filename}
@@ -254,7 +284,7 @@ async def cull_file(name: str, request: CullRequest):
 
 @router.post("/{name}/keep")
 async def keep_file(name: str, request: CullRequest):
-    """Unmark a file as culled (keep it)"""
+    """Mark a file as explicitly kept"""
     library_path = get_library_path()
     project_path = os.path.join(library_path, name)
 
@@ -263,8 +293,13 @@ async def keep_file(name: str, request: CullRequest):
 
     metadata = load_metadata(project_path)
     culled_files = set(metadata.get("culled_files", []))
-    culled_files.discard(request.filename)
+    kept_files = set(metadata.get("kept_files", []))
+
+    kept_files.add(request.filename)
+    culled_files.discard(request.filename)  # Remove from culled if it was there
+
     metadata["culled_files"] = list(culled_files)
+    metadata["kept_files"] = list(kept_files)
     save_metadata(project_path, metadata)
 
     return {"status": "kept", "filename": request.filename}

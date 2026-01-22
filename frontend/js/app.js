@@ -247,7 +247,7 @@ const App = {
     updateStats() {
         const total = this.files.length;
         const culled = this.files.filter(f => f.culled).length;
-        const kept = total - culled;
+        const kept = this.files.filter(f => f.kept).length;
 
         this.elements.statTotal.textContent = `${total} files`;
         this.elements.statCulled.textContent = `${culled} culled`;
@@ -268,7 +268,8 @@ const App = {
         // Filter files
         this.filteredFiles = this.files.filter(file => {
             if (filter === 'all') return true;
-            if (filter === 'kept') return !file.culled;
+            if (filter === 'unassigned') return !file.culled && !file.kept;
+            if (filter === 'kept') return file.kept;
             if (filter === 'culled') return file.culled;
             return file.type === filter;
         });
@@ -360,7 +361,13 @@ const App = {
             // Update local state
             const file = this.files.find(f => f.filename === filename);
             if (file) {
-                file.culled = cull;
+                if (cull) {
+                    file.culled = true;
+                    file.kept = false;
+                } else {
+                    file.culled = false;
+                    file.kept = true;
+                }
             }
 
             // Update UI

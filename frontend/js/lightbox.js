@@ -168,11 +168,15 @@ const Lightbox = {
         try {
             await API.cullFile(this.projectName, file.filename);
             file.culled = true;
+            file.kept = false;
             this.updateActionButtons(true);
 
             // Update main app state
             const mainFile = App.files.find(f => f.filename === file.filename);
-            if (mainFile) mainFile.culled = true;
+            if (mainFile) {
+                mainFile.culled = true;
+                mainFile.kept = false;
+            }
             App.updateStats();
 
             App.showToast('Marked as culled', 'error');
@@ -198,11 +202,15 @@ const Lightbox = {
         try {
             await API.keepFile(this.projectName, file.filename);
             file.culled = false;
+            file.kept = true;
             this.updateActionButtons(false);
 
             // Update main app state
             const mainFile = App.files.find(f => f.filename === file.filename);
-            if (mainFile) mainFile.culled = false;
+            if (mainFile) {
+                mainFile.culled = false;
+                mainFile.kept = true;
+            }
             App.updateStats();
 
             App.showToast('Marked as kept', 'success');

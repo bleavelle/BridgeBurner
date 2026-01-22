@@ -20,6 +20,7 @@ from config import (
     RAW_EXTENSIONS,
     VIDEO_EXTENSIONS,
 )
+from services.thumbnails import get_or_create_thumbnail
 from services.conversion import (
     find_ffmpeg,
     get_ffmpeg_version,
@@ -966,6 +967,13 @@ def run_import_job(
                 imported[dest_subdir] += 1
                 counters[dest_subdir] += 1
                 files_processed += 1
+
+                # Pre-generate thumbnail for images/RAWs
+                if dest_subdir in ("RAW", "JPEG"):
+                    try:
+                        get_or_create_thumbnail(dest_path, project_path)
+                    except Exception as thumb_err:
+                        print(f"[Import] Thumbnail generation failed for {new_filename}: {thumb_err}")
 
                 # Update job progress
                 if job["total"] > 0:
